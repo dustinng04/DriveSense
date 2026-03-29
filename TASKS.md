@@ -10,9 +10,8 @@
 - [x] User settings schema
 
 ## Mock Data & Dev Setup
-- [ ] Create mock dataset (3–4 messy Drive/Notion workspace snapshots)
-- [ ] Seed script to load mock data into dev environment
-- [ ] Local file fixture loader for offline dev (no real API needed)
+- [x] SQL-first local dev seed (`infrastructure/supabase/seeds/dev_seed.sql`)
+- [x] Keep seeded suggestion payloads deterministic and easy to reset
 
 ## Core Intelligence (TypeScript / Extension)
 - [ ] Context detector — identify current Drive file/folder or Notion page
