@@ -14,22 +14,22 @@
 - [x] Keep seeded suggestion payloads deterministic and easy to reset
 
 ## Core Intelligence (TypeScript / Extension)
-- [ ] Context detector — identify current Drive file/folder or Notion page
-- [ ] Browser-local BYOK key storage and provider selection
-- [ ] Lightweight file scanner — inspect whitelisted current context
-- [ ] Exact duplicate detection (content hash)
-- [ ] Near-duplicate detection (text similarity scoring)
-- [ ] Staleness detector (metadata + LLM reasoning)
-- [ ] Rule engine — declarative rule evaluation shared by extension and Node API
-- [ ] Unified LLM interface — adapter pattern (Gemini default, OpenAI, Claude, GLM)
-- [ ] Prompt templates (see PROMPTS.md)
-- [ ] Prompt logging for debugging without secrets or raw full content
-- [ ] Contextual suggestion card builder
+- [x] Context detector — identify current Drive file/folder or Notion page
+- [x] Browser-local BYOK key storage and provider selection
+- [x] Lightweight file scanner — inspect whitelisted current context
+- [x] Exact duplicate detection (content hash)
+- [x] Near-duplicate detection (text similarity scoring)
+- [x] Staleness detector (metadata + LLM reasoning)
+- [x] Rule engine — declarative rule evaluation shared by extension and Node API
+- [x] Unified LLM interface — adapter pattern (Gemini default, OpenAI, Claude, GLM)
+- [x] Prompt templates (see PROMPTS.md)
+- [x] Prompt logging for debugging without secrets or raw full content
+- [x] Contextual suggestion card builder
 
 ## Early Validation (do this before full UI)
-- [ ] End-to-end flow: open mock file/folder context → generate suggestion → display popup/card JSON
-- [ ] Confirm suggestion schema works for all action types (archive, merge, rename)
-- [ ] Validate rule engine correctly blocks suggestions on whitelisted folders
+- [x] End-to-end flow: open mock file/folder context → generate suggestion → display popup/card JSON
+- [x] Confirm suggestion schema works for all action types (archive, merge, rename)
+- [x] Validate rule engine correctly blocks suggestions on whitelisted folders
 
 ## Node API & Persistence
 - [ ] Session and user management

@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "test": "tsx src/context/__tests__/detector.test.ts && tsx src/rules/__tests__/evaluator.test.ts && tsx src/suggestions/__tests__/builder.test.ts && tsx src/suggestions/__tests__/validationRoute.test.ts"
   },
   "dependencies": {
     "dotenv": "^16.6.1",

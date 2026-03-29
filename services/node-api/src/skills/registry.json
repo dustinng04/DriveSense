@@ -1,0 +1,24 @@
+{
+  "skills": [
+    {
+      "name": "google-drive-management",
+      "path": ".agents/skills/google-drive-management",
+      "description": "Manages Google Drive files and folders through the Drive API",
+      "triggers": {
+        "platforms": ["google_drive"],
+        "contextTypes": ["file", "folder"],
+        "operations": ["read", "write", "move", "delete", "share"]
+      }
+    },
+    {
+      "name": "notion-management",
+      "path": ".agents/skills/notion-management",
+      "description": "Manages Notion pages and databases through the Notion API",
+      "triggers": {
+        "platforms": ["notion"],
+        "contextTypes": ["page"],
+        "operations": ["read", "write"]
+      }
+    }
+  ]
+}
