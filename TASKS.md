@@ -32,11 +32,11 @@
 - [x] Validate rule engine correctly blocks suggestions on whitelisted folders
 
 ## Node API & Persistence
-- [ ] Session and user management
-- [ ] Suggestion queue — receive, store, serve suggestions
-- [ ] Undo history — log actions, rollback support
-- [ ] Rules CRUD
-- [ ] Settings persistence
+- [x] Session and user management
+- [x] Suggestion queue — receive, store, serve suggestions
+- [x] Undo history — log actions, rollback support
+- [x] Rules CRUD
+- [x] Settings persistence
 - [ ] Free-call quota tracking for users without BYOK
 - [ ] Server-owned LLM proxy for limited free calls
 

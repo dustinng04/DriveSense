@@ -7,6 +7,16 @@ import { skillLoader } from "./skills/loader.js";
 import type { ContextMetadata } from "./context/types.js";
 import type { SkillOperation } from "./skills/types.js";
 import { generateValidationSuggestions } from "./suggestions/devValidation.js";
+import { requireAuth } from "./auth/middleware.js";
+import { settingsRouter } from "./settings/routes.js";
+import { suggestionsRouter } from "./suggestions/routes.js";
+import { undoHistoryRouter } from "./undo-history/routes.js";
+import { rulesRouter } from "./rules/routes.js";
+import type { AuthenticatedRequestContext } from "./auth/types.js";
+
+interface AuthenticatedLocals {
+  auth: AuthenticatedRequestContext;
+}
 
 export function createApp() {
   const app = express();
@@ -117,6 +127,22 @@ export function createApp() {
       });
     }
   });
+
+  app.get(
+    "/session/me",
+    requireAuth,
+    (_req, res: express.Response<unknown, AuthenticatedLocals>) => {
+      return res.json({
+        userId: res.locals.auth.userId,
+        claims: res.locals.auth.claims,
+      });
+    },
+  );
+
+  app.use("/settings", requireAuth, settingsRouter);
+  app.use("/suggestions", requireAuth, suggestionsRouter);
+  app.use("/undo-history", requireAuth, undoHistoryRouter);
+  app.use("/rules", requireAuth, rulesRouter);
 
   return app;
 }

@@ -21,6 +21,13 @@ export interface UserSettings {
   preferences: Record<string, unknown>;
 }
 
+export type UserSettingsPatch = Partial<
+  Omit<UserSettings, "suggestionNotifications" | "autoConfirmActions">
+> & {
+  suggestionNotifications?: Partial<UserSettings["suggestionNotifications"]>;
+  autoConfirmActions?: false;
+};
+
 export const DEFAULT_USER_SETTINGS: UserSettings = {
   llmProvider: "gemini",
   llmModel: null,
@@ -37,3 +44,20 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   autoConfirmActions: false,
   preferences: {},
 };
+
+export function mergeUserSettings(current: UserSettings, patch: UserSettingsPatch): UserSettings {
+  const mergedNotifications = patch.suggestionNotifications
+    ? {
+        ...current.suggestionNotifications,
+        ...patch.suggestionNotifications,
+      }
+    : current.suggestionNotifications;
+
+  return {
+    ...current,
+    ...patch,
+    suggestionNotifications: mergedNotifications,
+    autoConfirmActions: false,
+    preferences: patch.preferences ?? current.preferences,
+  };
+}

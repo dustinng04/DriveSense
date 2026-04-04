@@ -1,8 +1,10 @@
 import type { DetectedContext } from '../context/types.js';
 import type { SkillMetadata, SkillOperation } from './types.js';
-import registryJson from './registry.json';
+import { readFileSync } from 'node:fs';
 
-const registryData = registryJson as { skills: SkillMetadata[] };
+const registryData = JSON.parse(
+  readFileSync(new URL('./registry.json', import.meta.url), 'utf-8')
+) as { skills: SkillMetadata[] };
 
 /**
  * Skill trigger system

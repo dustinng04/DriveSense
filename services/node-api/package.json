@@ -6,19 +6,21 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && mkdir -p dist/skills && cp src/skills/registry.json dist/skills/registry.json",
     "start": "node dist/server.js",
     "test": "tsx src/context/__tests__/detector.test.ts && tsx src/rules/__tests__/evaluator.test.ts && tsx src/suggestions/__tests__/builder.test.ts && tsx src/suggestions/__tests__/validationRoute.test.ts"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "jose": "^6.2.2",
+    "pg": "^8.20.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.23",
     "@types/node": "^22.15.21",
+    "@types/pg": "^8.20.0",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"
   }
 }
-
