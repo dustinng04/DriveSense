@@ -37,8 +37,8 @@
 - [x] Undo history — log actions, rollback support
 - [x] Rules CRUD
 - [x] Settings persistence
-- [ ] Free-call quota tracking for users without BYOK
-- [ ] Server-owned LLM proxy for limited free calls
+- [x] Free-call quota tracking for users without BYOK
+- [x] Server-owned LLM proxy for limited free calls
 
 ## Platform Integrations
 - [ ] Google Drive API — list, read, move, trash files

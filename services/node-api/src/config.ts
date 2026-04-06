@@ -16,6 +16,26 @@ function requireEnv(name: string): string {
   return value;
 }
 
+function readIntegerEnv(
+  name: string,
+  defaultValue: number,
+  options: { min: number; max: number },
+): number {
+  const rawValue = process.env[name];
+  if (!rawValue) {
+    return defaultValue;
+  }
+
+  const parsed = Number(rawValue);
+  if (!Number.isInteger(parsed) || parsed < options.min || parsed > options.max) {
+    throw new Error(
+      `Invalid ${name}: ${rawValue}. Must be an integer between ${options.min} and ${options.max}.`,
+    );
+  }
+
+  return parsed;
+}
+
 function resolveDatabaseUrl(): string {
   if (process.env.DATABASE_URL) {
     return process.env.DATABASE_URL;
@@ -42,5 +62,7 @@ export const config = {
   supabaseJwtIssuer: process.env.SUPABASE_JWT_ISSUER,
   supabaseJwtAudience: process.env.SUPABASE_JWT_AUDIENCE,
   pyEngineBaseUrl: process.env.PY_ENGINE_BASE_URL,
+  freeCallGeminiApiKey: process.env.FREE_CALL_GEMINI_API_KEY,
+  freeCallTrialLimit: readIntegerEnv("FREE_CALL_TRIAL_LIMIT", 10, { min: 5, max: 10 }),
 };
 

@@ -12,6 +12,7 @@ import { settingsRouter } from "./settings/routes.js";
 import { suggestionsRouter } from "./suggestions/routes.js";
 import { undoHistoryRouter } from "./undo-history/routes.js";
 import { rulesRouter } from "./rules/routes.js";
+import { freeCallsRouter } from "./free-calls/routes.js";
 import type { AuthenticatedRequestContext } from "./auth/types.js";
 
 interface AuthenticatedLocals {
@@ -143,6 +144,7 @@ export function createApp() {
   app.use("/suggestions", requireAuth, suggestionsRouter);
   app.use("/undo-history", requireAuth, undoHistoryRouter);
   app.use("/rules", requireAuth, rulesRouter);
+  app.use("/llm/free-call", requireAuth, freeCallsRouter);
 
   return app;
 }
