@@ -41,10 +41,10 @@
 - [x] Server-owned LLM proxy for limited free calls
 
 ## Platform Integrations
-- [ ] Google Drive API — list, read, move, trash files
-- [ ] Notion API — query databases, read/update pages
-- [ ] Google Drive OAuth flow
-- [ ] Notion OAuth flow
+- [x] Google Drive API — list, read, move, trash files
+- [x] Notion API — query databases, read/update pages
+- [x] Google Drive OAuth flow
+- [x] Notion OAuth flow
 
 ## Frontend & UX
 - [ ] Settings panel (LLM selection, API key input, folder whitelist)

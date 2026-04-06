@@ -64,5 +64,13 @@ export const config = {
   pyEngineBaseUrl: process.env.PY_ENGINE_BASE_URL,
   freeCallGeminiApiKey: process.env.FREE_CALL_GEMINI_API_KEY,
   freeCallTrialLimit: readIntegerEnv("FREE_CALL_TRIAL_LIMIT", 10, { min: 5, max: 10 }),
+  googleDriveClientId: process.env.GOOGLE_DRIVE_CLIENT_ID,
+  googleDriveClientSecret: process.env.GOOGLE_DRIVE_CLIENT_SECRET,
+  googleDriveOauthRedirectUri: process.env.GOOGLE_DRIVE_OAUTH_REDIRECT_URI,
+  googleDriveOauthSuccessRedirect: process.env.GOOGLE_DRIVE_OAUTH_SUCCESS_REDIRECT,
+  notionClientId: process.env.NOTION_CLIENT_ID,
+  notionClientSecret: process.env.NOTION_CLIENT_SECRET,
+  notionOauthRedirectUri: process.env.NOTION_OAUTH_REDIRECT_URI,
+  notionOauthSuccessRedirect: process.env.NOTION_OAUTH_SUCCESS_REDIRECT,
 };
 

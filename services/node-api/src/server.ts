@@ -13,6 +13,8 @@ import { suggestionsRouter } from "./suggestions/routes.js";
 import { undoHistoryRouter } from "./undo-history/routes.js";
 import { rulesRouter } from "./rules/routes.js";
 import { freeCallsRouter } from "./free-calls/routes.js";
+import { googleDriveOAuthRouter, googleDriveRouter } from "./google-drive/routes.js";
+import { notionOAuthRouter, notionRouter } from "./notion/routes.js";
 import type { AuthenticatedRequestContext } from "./auth/types.js";
 
 interface AuthenticatedLocals {
@@ -140,11 +142,15 @@ export function createApp() {
     },
   );
 
+  app.use("/google-drive/oauth", googleDriveOAuthRouter);
+  app.use("/notion/oauth", notionOAuthRouter);
   app.use("/settings", requireAuth, settingsRouter);
   app.use("/suggestions", requireAuth, suggestionsRouter);
   app.use("/undo-history", requireAuth, undoHistoryRouter);
   app.use("/rules", requireAuth, rulesRouter);
   app.use("/llm/free-call", requireAuth, freeCallsRouter);
+  app.use("/google-drive", requireAuth, googleDriveRouter);
+  app.use("/notion", requireAuth, notionRouter);
 
   return app;
 }
