@@ -5,9 +5,20 @@
       "path": ".agents/skills/google-drive-management",
       "description": "Manages Google Drive files and folders through the Drive API",
       "triggers": {
-        "platforms": ["google_drive"],
-        "contextTypes": ["file", "folder"],
-        "operations": ["read", "write", "move", "delete", "share"]
+        "platforms": [
+          "google_drive"
+        ],
+        "contextTypes": [
+          "file",
+          "folder"
+        ],
+        "operations": [
+          "read",
+          "write",
+          "move",
+          "delete",
+          "share"
+        ]
       }
     },
     {
@@ -15,9 +26,33 @@
       "path": ".agents/skills/notion-management",
       "description": "Manages Notion pages and databases through the Notion API",
       "triggers": {
-        "platforms": ["notion"],
-        "contextTypes": ["page"],
-        "operations": ["read", "write"]
+        "platforms": [
+          "notion"
+        ],
+        "contextTypes": [
+          "page"
+        ],
+        "operations": [
+          "read",
+          "write"
+        ]
+      }
+    },
+    {
+      "name": "frontend-styling",
+      "path": ".agents/skills/frontend-styling",
+      "description": "Designs the frontend for DriveSense, a file hygiene extension that watches, detects, and surfaces file organization suggestions. The UI must be calm, precise, and trustworthy, with three surfaces: an extension popup (360px wide), content overlay (injected inline), and settings page (max 640px). The aesthetic is Refined Utilitarian with warm neutrals, a sage/amber palette, and considered typography (Fraunces / Plus Jakarta Sans / IBM Plex Mono).",
+      "triggers": {
+        "platforms": [
+          "web"
+        ],
+        "contextTypes": [
+          "web",
+          "extension"
+        ],
+        "operations": [
+          "all"
+        ]
       }
     }
   ]

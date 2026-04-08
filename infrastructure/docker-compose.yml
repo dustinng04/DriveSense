@@ -19,6 +19,19 @@ services:
       PY_ENGINE_BASE_URL: ${PY_ENGINE_BASE_URL:-http://py-engine:8000}
       FREE_CALL_GEMINI_API_KEY: ${FREE_CALL_GEMINI_API_KEY:-}
       FREE_CALL_TRIAL_LIMIT: ${FREE_CALL_TRIAL_LIMIT:-10}
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-}
+      SUPABASE_JWT_ISSUER: ${SUPABASE_JWT_ISSUER:-}
+      SUPABASE_JWT_AUDIENCE: ${SUPABASE_JWT_AUDIENCE:-}
+      GOOGLE_DRIVE_CLIENT_ID: ${GOOGLE_DRIVE_CLIENT_ID:-}
+      GOOGLE_DRIVE_CLIENT_SECRET: ${GOOGLE_DRIVE_CLIENT_SECRET:-}
+      GOOGLE_DRIVE_OAUTH_REDIRECT_URI: ${GOOGLE_DRIVE_OAUTH_REDIRECT_URI:-}
+      GOOGLE_DRIVE_OAUTH_SUCCESS_REDIRECT: ${GOOGLE_DRIVE_OAUTH_SUCCESS_REDIRECT:-}
+      NOTION_CLIENT_ID: ${NOTION_CLIENT_ID:-}
+      NOTION_CLIENT_SECRET: ${NOTION_CLIENT_SECRET:-}
+      NOTION_OAUTH_REDIRECT_URI: ${NOTION_OAUTH_REDIRECT_URI:-}
+      NOTION_OAUTH_SUCCESS_REDIRECT: ${NOTION_OAUTH_SUCCESS_REDIRECT:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      CORS_ALLOW_CHROME_EXTENSION: ${CORS_ALLOW_CHROME_EXTENSION:-}
 
   # py-engine:
   #   profiles:
@@ -32,6 +45,10 @@ services:
 
   db:
     image: postgres:16-alpine
+    # build:
+    #   context: ../services/node-api
+    # env_file:
+    #   - ../services/node-api/.env
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -42,7 +59,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ../infrastructure/supabase/migrations:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -50,4 +67,3 @@ services:
 
 volumes:
   postgres_data:
-

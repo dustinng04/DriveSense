@@ -33,3 +33,25 @@ export async function verifyOauthState(state: string, expectedPurpose: string): 
     throw new IntegrationError("OAuth state is invalid or expired.", 400);
   }
 }
+
+export async function createLoginState(purpose: string): Promise<string> {
+  return new SignJWT({ purpose })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime("10m")
+    .sign(encoder.encode(config.supabaseJwtSecret));
+}
+
+export async function verifyLoginState(state: string, expectedPurpose: string): Promise<void> {
+  try {
+    const verification = await jwtVerify<OAuthStatePayload>(state, encoder.encode(config.supabaseJwtSecret));
+    if (verification.payload.purpose !== expectedPurpose) {
+      throw new IntegrationError(`Invalid OAuth login state for purpose: ${expectedPurpose}.`, 400);
+    }
+  } catch (error) {
+    if (error instanceof IntegrationError) {
+      throw error;
+    }
+    throw new IntegrationError("OAuth login state is invalid or expired.", 400);
+  }
+}

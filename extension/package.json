@@ -1,0 +1,16 @@
+{
+  "name": "drivesense-extension",
+  "private": true,
+  "version": "0.1.0",
+  "description": "DriveSense browser extension — silent file hygiene for Google Drive and Notion",
+  "scripts": {
+    "dev": "vite build --watch",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.325",
+    "typescript": "~5.7.2",
+    "vite": "^6.3.5"
+  }
+}

@@ -10,7 +10,7 @@ if (isNaN(port) || port <= 0 || port > 65535) {
 
 function requireEnv(name: string): string {
   const value = process.env[name];
-  if (!value) {
+  if (!value?.trim()) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
   return value;
@@ -36,6 +36,29 @@ function readIntegerEnv(
   return parsed;
 }
 
+function parseCorsOrigins(): string[] {
+  const raw = process.env.CORS_ORIGINS;
+  if (!raw?.trim()) {
+    return ["http://localhost:5173", "http://127.0.0.1:5173"];
+  }
+
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function resolveCorsAllowChromeExtension(): boolean {
+  if (process.env.CORS_ALLOW_CHROME_EXTENSION === "true") {
+    return true;
+  }
+  if (process.env.CORS_ALLOW_CHROME_EXTENSION === "false") {
+    return false;
+  }
+
+  return (process.env.NODE_ENV ?? "development") !== "production";
+}
+
 function resolveDatabaseUrl(): string {
   if (process.env.DATABASE_URL) {
     return process.env.DATABASE_URL;
@@ -57,13 +80,17 @@ function resolveDatabaseUrl(): string {
 export const config = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   port,
+  corsAllowedOrigins: parseCorsOrigins(),
+  corsAllowChromeExtension: resolveCorsAllowChromeExtension(),
   databaseUrl: resolveDatabaseUrl(),
   supabaseJwtSecret: requireEnv("SUPABASE_JWT_SECRET"),
   supabaseJwtIssuer: process.env.SUPABASE_JWT_ISSUER,
   supabaseJwtAudience: process.env.SUPABASE_JWT_AUDIENCE,
+  supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  supabaseUrl: process.env.SUPABASE_URL,
   pyEngineBaseUrl: process.env.PY_ENGINE_BASE_URL,
   freeCallGeminiApiKey: process.env.FREE_CALL_GEMINI_API_KEY,
-  freeCallTrialLimit: readIntegerEnv("FREE_CALL_TRIAL_LIMIT", 10, { min: 5, max: 10 }),
+  freeCallTrialLimit: readIntegerEnv("FREE_CALL_TRIAL_LIMIT", 10, { min: 5, max: 15 }),
   googleDriveClientId: process.env.GOOGLE_DRIVE_CLIENT_ID,
   googleDriveClientSecret: process.env.GOOGLE_DRIVE_CLIENT_SECRET,
   googleDriveOauthRedirectUri: process.env.GOOGLE_DRIVE_OAUTH_REDIRECT_URI,

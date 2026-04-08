@@ -216,10 +216,48 @@ export async function getNotionOauthUrl(userId: string): Promise<string> {
   return url.toString();
 }
 
+export async function getNotionLoginUrl(): Promise<string> {
+  assertNotionOauthConfigured();
+
+  const { createLoginState } = await import("../integrations/oauthState.js");
+  const state = await createLoginState("notion-login");
+  const url = new URL(NOTION_OAUTH_BASE);
+  url.searchParams.set("client_id", config.notionClientId!);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("owner", "user");
+  url.searchParams.set("redirect_uri", config.notionOauthRedirectUri!);
+  url.searchParams.set("state", state);
+
+  return url.toString();
+}
+
 export async function handleNotionOAuthCallback(params: { code: string; state: string }) {
   const userId = await verifyNotionOauthState(params.state);
   const tokens = await exchangeCodeForTokens(params.code);
 
+  await upsertNotionConnection(userId, sanitizeTokenWrite(tokens, null));
+  return userId;
+}
+
+export async function handleNotionLoginCallback(params: { code: string; state: string }): Promise<string> {
+  const { verifyLoginState } = await import("../integrations/oauthState.js");
+  const { getOrCreateAuthUser } = await import("../auth/admin.js");
+  
+  await verifyLoginState(params.state, "notion-login");
+  const tokens = await exchangeCodeForTokens(params.code);
+
+  // For Notion, we might use the owner's email if available, or bot_id/workspace_id.
+  // Notion token response often has an owner object. Let's assume owner.user.person.email exists, 
+  // or fallback to workspace_name + workspace_id.
+  let email = "unknown@notion.local";
+  const owner = tokens.owner as any;
+  if (owner?.user?.person?.email) {
+    email = owner.user.person.email;
+  } else if (tokens.workspace_name) {
+    email = `${tokens.workspace_name.toLowerCase().replace(/\s+/g, '_')}_${tokens.workspace_id}@notion.local`;
+  }
+
+  const userId = await getOrCreateAuthUser(email);
   await upsertNotionConnection(userId, sanitizeTokenWrite(tokens, null));
   return userId;
 }

@@ -231,7 +231,26 @@ export async function getGoogleDriveOauthUrl(userId: string): Promise<string> {
   url.searchParams.set("client_id", config.googleDriveClientId!);
   url.searchParams.set("redirect_uri", config.googleDriveOauthRedirectUri!);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", DRIVE_SCOPE);
+  url.searchParams.set("scope", DRIVE_SCOPE + " email profile");
+  url.searchParams.set("access_type", "offline");
+  url.searchParams.set("prompt", "consent");
+  url.searchParams.set("include_granted_scopes", "true");
+  url.searchParams.set("state", state);
+
+  return url.toString();
+}
+
+export async function getGoogleDriveLoginUrl(): Promise<string> {
+  assertGoogleOauthConfigured();
+
+  const { createLoginState } = await import("../integrations/oauthState.js");
+  const state = await createLoginState("google-drive-login");
+  const url = new URL(GOOGLE_OAUTH_BASE);
+  url.searchParams.set("client_id", config.googleDriveClientId!);
+  url.searchParams.set("redirect_uri", config.googleDriveOauthRedirectUri!);
+  url.searchParams.set("response_type", "code");
+  // Add email and profile scopes to fetch user info for login
+  url.searchParams.set("scope", DRIVE_SCOPE + " email profile");
   url.searchParams.set("access_type", "offline");
   url.searchParams.set("prompt", "consent");
   url.searchParams.set("include_granted_scopes", "true");
@@ -245,6 +264,33 @@ export async function handleGoogleDriveOAuthCallback(params: { code: string; sta
   const tokens = await exchangeCodeForTokens(params.code);
 
   await upsertGoogleDriveConnection(userId, sanitizeTokenWrite(tokens, null));
+  return userId;
+}
+
+export async function handleGoogleDriveLoginCallback(params: { code: string; state: string }): Promise<string> {
+  const { verifyLoginState } = await import("../integrations/oauthState.js");
+  const { getOrCreateAuthUser } = await import("../auth/admin.js");
+  
+  await verifyLoginState(params.state, "google-drive-login");
+  const tokens = await exchangeCodeForTokens(params.code);
+
+  // Fetch user info using the access token
+  const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+    headers: { Authorization: `Bearer ${tokens.access_token}` },
+  });
+
+  if (!userInfoRes.ok) {
+    throw new Error(`Failed to fetch Google user info: ${await userInfoRes.text()}`);
+  }
+
+  const userInfo = await userInfoRes.json() as { email: string; id: string };
+  if (!userInfo.email) {
+    throw new Error("Google OAuth did not return an email address.");
+  }
+
+  const userId = await getOrCreateAuthUser(userInfo.email);
+  await upsertGoogleDriveConnection(userId, sanitizeTokenWrite(tokens, null));
+  
   return userId;
 }
 

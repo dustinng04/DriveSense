@@ -8,15 +8,17 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json && mkdir -p dist/skills && cp src/skills/registry.json dist/skills/registry.json",
     "start": "node dist/server.js",
-    "test": "tsx src/context/__tests__/detector.test.ts && tsx src/rules/__tests__/evaluator.test.ts && tsx src/suggestions/__tests__/builder.test.ts && tsx src/suggestions/__tests__/validationRoute.test.ts"
+    "test": "node --test --require tsx/cjs src/**/__tests__/**/*.test.ts"
   },
   "dependencies": {
+    "cors": "^2.8.6",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
     "jose": "^6.2.2",
     "pg": "^8.20.0"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^4.17.23",
     "@types/node": "^22.15.21",
     "@types/pg": "^8.20.0",

@@ -47,13 +47,13 @@
 - [x] Notion OAuth flow
 
 ## Frontend & UX
-- [ ] Settings panel (LLM selection, API key input, folder whitelist)
-- [ ] Contextual suggestion popup/card with reason + confirm/skip/dismiss
-- [ ] Suggestion queue list view for later review
-- [ ] Rule editor interface
-- [ ] Undo history viewer
-- [ ] Browser extension scaffolding
-- [ ] Web dashboard scaffolding (secondary)
+- [x] Settings panel (LLM selection, API key input, folder whitelist)
+- [x] Contextual suggestion popup/card with reason + confirm/skip/dismiss
+- [x] Suggestion queue list view for later review
+- [x] Rule editor interface
+- [x] Undo history viewer
+- [x] Browser extension scaffolding
+- [x] Web dashboard scaffolding (secondary)
 
 ## Testing & Polish
 - [ ] Unit tests — TypeScript core intelligence

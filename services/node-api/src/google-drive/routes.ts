@@ -77,6 +77,42 @@ googleDriveOAuthRouter.get("/callback", async (req: Request, res: Response) => {
   }
 });
 
+googleDriveOAuthRouter.get("/login/start", async (_req: Request, res: Response) => {
+  try {
+    const { getGoogleDriveLoginUrl } = await import("./service.js");
+    const authUrl = await getGoogleDriveLoginUrl();
+    return res.redirect(authUrl);
+  } catch (error) {
+    return sendErrorResponse(res, "Failed to create Google Drive Login URL.", error);
+  }
+});
+
+googleDriveOAuthRouter.get("/login/callback", async (req: Request, res: Response) => {
+  const error = typeof req.query.error === "string" ? req.query.error : undefined;
+  const code = typeof req.query.code === "string" ? req.query.code : undefined;
+  const state = typeof req.query.state === "string" ? req.query.state : undefined;
+
+  const dashboardUrl = config.corsAllowedOrigins[0] || "http://localhost:5173";
+
+  if (error || !code || !state) {
+    return res.redirect(`${dashboardUrl}?error=google_login_failed`);
+  }
+
+  try {
+    const { handleGoogleDriveLoginCallback } = await import("./service.js");
+    const { generateAccessToken } = await import("../auth/jwt.js");
+
+    const userId = await handleGoogleDriveLoginCallback({ code, state });
+    const token = await generateAccessToken(userId);
+
+    // Redirect to the success page with the token
+    return res.redirect(`${dashboardUrl}/oauth-success?token=${encodeURIComponent(token)}`);
+  } catch (err) {
+    console.error("Google Drive login failed", err);
+    return res.redirect(`${dashboardUrl}?error=google_login_failed`);
+  }
+});
+
 googleDriveRouter.get(
   "/oauth/start",
   async (_req: Request, res: Response<unknown, AuthenticatedLocals>) => {

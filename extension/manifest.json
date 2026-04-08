@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "DriveSense",
+  "version": "0.1.0",
+  "description": "Silent file hygiene for Google Drive and Notion — suggests, never acts unilaterally.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png"
+    },
+    "default_title": "DriveSense"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://docs.google.com/*",
+        "https://drive.google.com/*",
+        "https://www.notion.so/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "scripting",
+    "notifications",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://localhost:3001/*",
+    "http://127.0.0.1:3001/*",
+    "https://docs.google.com/*",
+    "https://drive.google.com/*",
+    "https://www.notion.so/*"
+  ],
+  "externally_connectable": {
+    "matches": [
+      "http://localhost:5173/*",
+      "http://127.0.0.1:5173/*",
+      "https://app.drivesense.io/*"
+    ]
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["popup.html", "popup.js", "icons/*", "assets/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import cors from "cors";
 import express from "express";
 import { pathToFileURL } from "node:url";
 import { config } from "./config.js";
@@ -24,6 +25,28 @@ interface AuthenticatedLocals {
 export function createApp() {
   const app = express();
 
+  app.use(
+    cors({
+      origin(origin, callback) {
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+        if (config.corsAllowedOrigins.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+        if (config.corsAllowChromeExtension && origin.startsWith("chrome-extension://")) {
+          callback(null, true);
+          return;
+        }
+        callback(null, false);
+      },
+      credentials: true,
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization"],
+    }),
+  );
   app.use(express.json());
 
   app.get("/health", (_req, res) => {
@@ -39,7 +62,7 @@ export function createApp() {
     });
   });
 
-  app.post("/context/detect", (req, res) => {
+  app.post("/context/detect", requireAuth, (req, res) => {
     const { url, metadata } = req.body as { url?: string; metadata?: ContextMetadata };
     
     if (!url) {
@@ -73,7 +96,7 @@ export function createApp() {
     return res.json(skill);
   });
 
-  app.get("/skills/:name/status", async (req, res) => {
+  app.get("/skills/:name/status", requireAuth, async (req, res: express.Response<unknown, AuthenticatedLocals>) => {
     const { name } = req.params;
     const metadata = skillLoader.getSkillMetadata(name);
     
@@ -87,11 +110,11 @@ export function createApp() {
       name,
       isLoaded,
       metadata,
-      authenticated: false,
+      authenticated: true,
     });
   });
 
-  app.post("/context/match-skills", (req, res) => {
+  app.post("/context/match-skills", requireAuth, (req, res) => {
     const { url, metadata, operations } = req.body as { 
       url?: string; 
       metadata?: ContextMetadata;
@@ -119,7 +142,7 @@ export function createApp() {
     }
   });
 
-  app.post("/dev/suggestions/validate", async (req, res) => {
+  app.post("/dev/suggestions/validate", requireAuth, async (req, res) => {
     try {
       const payload = await generateValidationSuggestions(req.body ?? {});
       return res.json(payload);
@@ -142,8 +165,8 @@ export function createApp() {
     },
   );
 
-  app.use("/google-drive/oauth", googleDriveOAuthRouter);
-  app.use("/notion/oauth", notionOAuthRouter);
+  app.use("/oauth/google-drive", googleDriveOAuthRouter);
+  app.use("/oauth/notion", notionOAuthRouter);
   app.use("/settings", requireAuth, settingsRouter);
   app.use("/suggestions", requireAuth, suggestionsRouter);
   app.use("/undo-history", requireAuth, undoHistoryRouter);
@@ -166,4 +189,3 @@ if (shouldStartServer) {
     console.log(`node-api listening on :${config.port} (${config.nodeEnv})`);
   });
 }
-

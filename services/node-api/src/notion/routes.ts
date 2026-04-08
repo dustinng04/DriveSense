@@ -67,6 +67,43 @@ notionOAuthRouter.get("/callback", async (req: Request, res: Response) => {
   }
 });
 
+notionOAuthRouter.get("/login/start", async (_req: Request, res: Response) => {
+  try {
+    const { getNotionLoginUrl } = await import("./service.js");
+    const authUrl = await getNotionLoginUrl();
+    // Redirect directly to the Notion OAuth screen
+    return res.redirect(authUrl);
+  } catch (error) {
+    return sendErrorResponse(res, "Failed to create Notion Login URL.", error);
+  }
+});
+
+notionOAuthRouter.get("/login/callback", async (req: Request, res: Response) => {
+  const error = typeof req.query.error === "string" ? req.query.error : undefined;
+  const code = typeof req.query.code === "string" ? req.query.code : undefined;
+  const state = typeof req.query.state === "string" ? req.query.state : undefined;
+
+  const dashboardUrl = config.corsAllowedOrigins[0] || "http://localhost:5173";
+
+  if (error || !code || !state) {
+    return res.redirect(`${dashboardUrl}?error=notion_login_failed`);
+  }
+
+  try {
+    const { handleNotionLoginCallback } = await import("./service.js");
+    const { generateAccessToken } = await import("../auth/jwt.js");
+
+    const userId = await handleNotionLoginCallback({ code, state });
+    const token = await generateAccessToken(userId);
+
+    // Redirect to the success page with the token
+    return res.redirect(`${dashboardUrl}/oauth-success?token=${encodeURIComponent(token)}`);
+  } catch (err) {
+    console.error("Notion login failed", err);
+    return res.redirect(`${dashboardUrl}?error=notion_login_failed`);
+  }
+});
+
 notionRouter.get("/oauth/start", async (_req: Request, res: Response<unknown, AuthenticatedLocals>) => {
   try {
     const authUrl = await getNotionOauthUrl(res.locals.auth.userId);

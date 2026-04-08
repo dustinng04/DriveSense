@@ -1,4 +1,4 @@
-import { jwtVerify, type JWTPayload } from "jose";
+import { jwtVerify, SignJWT, type JWTPayload } from "jose";
 import { config } from "../config.js";
 
 const encoder = new TextEncoder();
@@ -35,5 +35,23 @@ export async function verifyAccessToken(token: string): Promise<VerifiedAccessTo
     userId,
     claims: verification.payload,
   };
+}
+
+export async function generateAccessToken(userId: string): Promise<string> {
+  const audience = sanitizeAudience(config.supabaseJwtAudience) ?? "authenticated";
+  const issuer = sanitizeIssuer(config.supabaseJwtIssuer);
+
+  const jwt = new SignJWT({ sub: userId, role: "authenticated" })
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(userId)
+    .setIssuedAt()
+    .setExpirationTime("7d")
+    .setAudience(audience);
+
+  if (issuer) {
+    jwt.setIssuer(issuer);
+  }
+
+  return jwt.sign(encoder.encode(config.supabaseJwtSecret));
 }
 
