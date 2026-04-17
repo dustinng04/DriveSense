@@ -71,6 +71,52 @@ export interface UndoAction {
   undoneAt: string | null;
 }
 
+// --- Local Metadata Index ---
+
+/** Metadata for a file as stored in the browser-local index */
+export interface IndexedFile {
+  /** Platform-native file ID */
+  id: string;
+  /** Display name / title */
+  name: string;
+  /** MIME type */
+  mimeType: string;
+  /** ISO 8601 last-modified timestamp */
+  modifiedAt: string;
+  /** ISO 8601 creation timestamp, when available */
+  createdAt?: string;
+  /** File size in bytes, when available */
+  sizeBytes?: number;
+  /** Human-readable path or breadcrumb */
+  path?: string;
+  /** Owner email(s) or display names */
+  owners?: string[];
+  /** Platform this file came from */
+  platform: Platform;
+  /** Folder/page IDs this file belongs to (for multi-folder tracking) */
+  parentFolderIds: string[];
+  /** True if metadata has been pushed to Orchestrator and acknowledged */
+  serverSynced: boolean;
+}
+
+/** Crawl metadata for a folder/page */
+export interface FolderCrawlState {
+  /** Unix timestamp (ms) when the folder was last crawled */
+  crawledAt: number;
+  /** Unix timestamp (ms) when the folder was last accessed */
+  lastAccessedAt: number;
+}
+
+/** Local metadata index state stored in chrome.storage.local */
+export interface MetadataIndex {
+  /** Schema version; bump when IndexedFile shape or index structure changes */
+  version: number;
+  /** Map of "platform:accountEmail:fileId" -> IndexedFile */
+  entries: Record<string, IndexedFile>;
+  /** Map of "platform:accountEmail:folderId" -> FolderCrawlState */
+  folderCrawls: Record<string, FolderCrawlState>;
+}
+
 // --- Extension-specific storage types ---
 
 /** Keys available in chrome.storage.local */
@@ -90,6 +136,8 @@ export interface ExtensionStorage {
     url: string;
     fileId?: string;
   } | null;
+  /** Local metadata index for cross-folder comparison */
+  metadataIndex: MetadataIndex;
 }
 
 // --- Extension messaging ---

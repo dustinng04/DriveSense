@@ -16,9 +16,14 @@
 ## Core Intelligence (TypeScript / Extension)
 - [x] Context detector — identify current Drive file/folder or Notion page
 - [x] Browser-local BYOK key storage and provider selection
-- [x] Lightweight file scanner — inspect whitelisted current context
+- [x] Lightweight file scanner — metadata only, no content fetch (content fetch is Orchestrator responsibility)
+- [x] Local metadata index — storage, TTL, staleness flags, serverSynced field
+- [x] Index lifecycle — initial crawl on whitelist, incremental update on trigger, 24h expiry
+- [ ] Cross-folder comparison using local index
 - [x] Exact duplicate detection (content hash)
 - [x] Near-duplicate detection (text similarity scoring)
+- [ ] Subset/containment detection (one-sided similarity for summary vs full doc)
+- [ ] Relationship classifier — exact / near-duplicate / subset / unrelated
 - [x] Staleness detector (metadata + LLM reasoning)
 - [x] Rule engine — declarative rule evaluation shared by extension and Node API
 - [x] Unified LLM interface — adapter pattern (Gemini default, OpenAI, Claude, GLM)
@@ -39,6 +44,9 @@
 - [x] Settings persistence
 - [x] Free-call quota tracking for users without BYOK
 - [x] Server-owned LLM proxy for limited free calls
+- [ ] Analysis Orchestrator — metadata filter → rejection check → selective content fetch → analysis → LLM enrichment
+- [ ] Rejection history — persist dismissed suggestions, check before generating new ones
+- [ ] Supabase Realtime subscription — progressive suggestion delivery to extension
 
 ## Platform Integrations
 - [x] Google Drive API — list, read, move, trash files
@@ -64,4 +72,5 @@
 - [ ] User guide
 
 ## Deferred / Optional
-- [ ] Python FastAPI engine for future heavy batch processing, embeddings, or document parsing
+- [ ] Classification tool — semantic file categorization (requires embedding pipeline, pgvector in Supabase, serverSynced index field)
+- [ ] Embedding pipeline — vector storage for semantic similarity (Python FastAPI or serverside)

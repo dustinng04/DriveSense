@@ -12,6 +12,11 @@ const STORAGE_DEFAULTS: ExtensionStorage = {
   pendingSuggestions: [],
   lastShownSuggestionId: null,
   activeContext: null,
+  metadataIndex: {
+    version: 1,
+    entries: {},
+    folderCrawls: {},
+  },
 };
 
 /**

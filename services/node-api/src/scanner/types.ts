@@ -26,6 +26,19 @@ export interface ScannedFile {
   owners?: string[];
   /** Platform this file came from */
   platform: Platform;
+  /** Parent folder IDs (Drive) or parent page IDs (Notion) this file belongs to */
+  parentFolderIds?: string[];
+}
+
+/**
+ * File metadata as stored in the browser-local index.
+ * Extends ScannedFile with extension-specific tracking fields.
+ */
+export interface IndexedFile extends ScannedFile {
+  /** Parent folder/page IDs this file was found in; enables multi-folder tracking */
+  parentFolderIds: string[];
+  /** True if this file's metadata has been pushed to Orchestrator and acknowledged */
+  serverSynced: boolean;
 }
 
 /**
