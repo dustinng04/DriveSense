@@ -9,8 +9,10 @@ import { createOauthState, verifyOauthState } from "../integrations/oauthState.j
 import {
   deleteNotionConnection,
   getNotionConnection,
+  listNotionAccountSummaries,
   upsertNotionConnection,
   type NotionConnection,
+  type NotionTokenWriteInput,
 } from "./repository.js";
 
 const NOTION_OAUTH_BASE = "https://api.notion.com/v1/oauth/authorize";
@@ -52,6 +54,24 @@ function sanitizeTokenWrite(input: NotionTokenResponse, fallbackRefreshToken: st
     tokenScope: null,
     tokenType: input.token_type ?? null,
     expiryDate,
+  };
+}
+
+/** Deterministic inbox for Supabase/DriveSense user creation only */
+function notionAuthSyntheticEmail(workspaceId: string): string {
+  const id = workspaceId.trim();
+  return `${id.replace(/[@\s]/g, "_")}@notion.oauth.drivesense.internal`;
+}
+
+function buildNotionWrite(
+  tokens: NotionTokenResponse,
+  fallbackRefreshToken: string | null,
+  accountId: string,
+): NotionTokenWriteInput {
+  const base = sanitizeTokenWrite(tokens, fallbackRefreshToken);
+  return {
+    ...base,
+    accountId,
   };
 }
 
@@ -137,8 +157,8 @@ function isExpired(connection: NotionConnection): boolean {
   return expiresAt <= Date.now() + 60_000;
 }
 
-async function getAccessToken(userId: string, options?: { forceRefresh?: boolean }): Promise<string> {
-  const connection = await getNotionConnection(userId);
+async function getAccessToken(userId: string, accountId: string, options?: { forceRefresh?: boolean }): Promise<string> {
+  const connection = await getNotionConnection(userId, accountId);
   if (!connection) {
     throw new IntegrationNotConnectedError("Notion");
   }
@@ -153,12 +173,16 @@ async function getAccessToken(userId: string, options?: { forceRefresh?: boolean
   }
 
   const refreshed = await refreshAccessToken(connection.refreshToken);
-  const next = await upsertNotionConnection(userId, sanitizeTokenWrite(refreshed, connection.refreshToken));
+  const next = await upsertNotionConnection(
+    userId,
+    buildNotionWrite(refreshed, connection.refreshToken, connection.accountId),
+  );
   return next.accessToken;
 }
 
 async function notionRequest(
   userId: string,
+  accountId: string,
   path: string,
   options?: {
     method?: string;
@@ -180,9 +204,9 @@ async function notionRequest(
     });
   };
 
-  let response = await runRequest(await getAccessToken(userId));
-  if ((response.status === 401 || response.status === 403) && (await getNotionConnection(userId))?.refreshToken) {
-    response = await runRequest(await getAccessToken(userId, { forceRefresh: true }));
+  let response = await runRequest(await getAccessToken(userId, accountId));
+  if ((response.status === 401 || response.status === 403) && (await getNotionConnection(userId, accountId))?.refreshToken) {
+    response = await runRequest(await getAccessToken(userId, accountId, { forceRefresh: true }));
   }
 
   if (!response.ok) {
@@ -235,54 +259,53 @@ export async function handleNotionOAuthCallback(params: { code: string; state: s
   const userId = await verifyNotionOauthState(params.state);
   const tokens = await exchangeCodeForTokens(params.code);
 
-  await upsertNotionConnection(userId, sanitizeTokenWrite(tokens, null));
+  if (!tokens.workspace_id?.trim()) {
+    throw new Error("Notion OAuth did not return workspace_id.");
+  }
+
+  await upsertNotionConnection(userId, buildNotionWrite(tokens, null, tokens.workspace_id.trim()));
   return userId;
 }
 
 export async function handleNotionLoginCallback(params: { code: string; state: string }): Promise<string> {
   const { verifyLoginState } = await import("../integrations/oauthState.js");
   const { getOrCreateAuthUser } = await import("../auth/admin.js");
-  
+
   await verifyLoginState(params.state, "notion-login");
   const tokens = await exchangeCodeForTokens(params.code);
 
-  // For Notion, we might use the owner's email if available, or bot_id/workspace_id.
-  // Notion token response often has an owner object. Let's assume owner.user.person.email exists, 
-  // or fallback to workspace_name + workspace_id.
-  let email = "unknown@notion.local";
-  const owner = tokens.owner as any;
-  if (owner?.user?.person?.email) {
-    email = owner.user.person.email;
-  } else if (tokens.workspace_name) {
-    email = `${tokens.workspace_name.toLowerCase().replace(/\s+/g, '_')}_${tokens.workspace_id}@notion.local`;
+  if (!tokens.workspace_id?.trim()) {
+    throw new Error("Notion OAuth did not return workspace_id.");
   }
 
-  const userId = await getOrCreateAuthUser(email);
-  await upsertNotionConnection(userId, sanitizeTokenWrite(tokens, null));
+  const workspaceIdTrimmed = tokens.workspace_id.trim();
+  const userId = await getOrCreateAuthUser(notionAuthSyntheticEmail(workspaceIdTrimmed));
+  await upsertNotionConnection(userId, buildNotionWrite(tokens, null, workspaceIdTrimmed));
   return userId;
 }
 
 export async function getNotionConnectionStatus(userId: string) {
-  const connection = await getNotionConnection(userId);
-  if (!connection) {
-    return { connected: false };
+  const accounts = await listNotionAccountSummaries(userId);
+  if (accounts.length === 0) {
+    return { connected: false as const, accounts: [] as const };
   }
 
   return {
-    connected: true,
-    tokenScope: connection.tokenScope,
-    tokenType: connection.tokenType,
-    expiryDate: connection.expiryDate,
-    updatedAt: connection.updatedAt,
+    connected: true as const,
+    accounts: accounts.map((a) => ({
+      accountId: a.accountId,
+      isPrimary: a.isPrimary,
+    })),
   };
 }
 
-export async function disconnectNotion(userId: string) {
-  await deleteNotionConnection(userId);
+export async function disconnectNotion(userId: string, accountId: string) {
+  await deleteNotionConnection(userId, accountId);
 }
 
 export async function queryNotionDatabase(params: {
   userId: string;
+  accountId: string;
   databaseId: string;
   filter?: unknown;
   sorts?: unknown;
@@ -305,6 +328,7 @@ export async function queryNotionDatabase(params: {
 
   const response = await notionRequest(
     params.userId,
+    params.accountId,
     `/databases/${encodeURIComponent(params.databaseId)}/query`,
     {
       method: "POST",
@@ -315,13 +339,14 @@ export async function queryNotionDatabase(params: {
   return response.json();
 }
 
-export async function readNotionPage(userId: string, pageId: string) {
-  const response = await notionRequest(userId, `/pages/${encodeURIComponent(pageId)}`);
+export async function readNotionPage(userId: string, accountId: string, pageId: string) {
+  const response = await notionRequest(userId, accountId, `/pages/${encodeURIComponent(pageId)}`);
   return response.json();
 }
 
 export async function updateNotionPage(params: {
   userId: string;
+  accountId: string;
   pageId: string;
   properties?: unknown;
   icon?: unknown;
@@ -346,7 +371,7 @@ export async function updateNotionPage(params: {
     requestBody.in_trash = params.inTrash;
   }
 
-  const response = await notionRequest(params.userId, `/pages/${encodeURIComponent(params.pageId)}`, {
+  const response = await notionRequest(params.userId, params.accountId, `/pages/${encodeURIComponent(params.pageId)}`, {
     method: "PATCH",
     body: requestBody,
   });

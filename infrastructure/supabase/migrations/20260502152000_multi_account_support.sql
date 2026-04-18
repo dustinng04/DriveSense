@@ -5,13 +5,12 @@
 -- 1. Add new columns
 alter table public.oauth_connections
 add column if not exists account_id text,
-add column if not exists account_email text,
 add column if not exists is_primary boolean not null default false;
 
 -- 2. Populate existing rows with a placeholder account_id if null
 -- For existing rows, we'll use 'legacy_default' as the account_id
 update public.oauth_connections
-set account_id = 'legacy_default', account_email = 'unknown@account'
+set account_id = 'legacy_default'
 where account_id is null;
 
 -- 3. Make account_id not null now that it's populated
@@ -26,9 +25,6 @@ drop constraint oauth_connections_pkey;
 -- Add the new composite PK including account_id
 alter table public.oauth_connections
 add primary key (user_id, provider, account_id);
-
--- 5. Add an index on account_email for faster lookup during context matching
-create index if not exists idx_oauth_connections_email on public.oauth_connections(account_email);
 
 -- 6. Update comments for clarity
 comment on column public.oauth_connections.account_id is 'The remote unique ID of the account (e.g. Google sub or Notion workspace ID)';

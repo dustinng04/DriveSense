@@ -15,7 +15,14 @@ import {
   setByokKey,
   storageGet,
 } from '../shared/storage.js';
-import { ping } from '../shared/api.js';
+import {
+  fetchSessionMe,
+  isContextLinked,
+  ping,
+  resolveAccountIdForPlatform,
+  startGoogleOauth,
+  startNotionOauth,
+} from '../shared/api.js';
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 
@@ -38,7 +45,7 @@ async function refreshStatus(): Promise<void> {
   const text = el('statusText');
   const countEl = el('suggestionCount');
   const contextPill = el('contextIndicator');
-  
+
   const loggedInView = el('loggedInView');
   const loggedOutView = el('loggedOutView');
   const unlinkedWarning = el('unlinkedWarning');
@@ -60,8 +67,10 @@ async function refreshStatus(): Promise<void> {
   // Update context UI
   if (activeContext) {
     contextPill.textContent = activeContext.platform === 'google_drive' ? 'Drive' : 'Notion';
-    if (activeContext.accountEmail) {
-      text.textContent = `Watching: ${activeContext.accountEmail}`;
+    if (activeContext.accountId) {
+      const id = activeContext.accountId;
+      const short = id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id;
+      text.textContent = `Watching: ${short}`;
     }
   } else {
     contextPill.textContent = 'Global';
@@ -70,7 +79,7 @@ async function refreshStatus(): Promise<void> {
   if (!hasToken) {
     loggedInView.classList.add('hidden');
     loggedOutView.classList.remove('hidden');
-    
+
     // Set dynamic buttons based on context
     const platform = activeContext?.platform;
     if (platform === 'google_drive') {
@@ -83,7 +92,7 @@ async function refreshStatus(): Promise<void> {
         <button class="btn-primary" id="connectNotion">Sign in with Notion</button>
       `;
     }
-    
+
     const googleBtn = document.getElementById('connectGoogle');
     const notionBtn = document.getElementById('connectNotion');
 
@@ -115,29 +124,35 @@ async function refreshStatus(): Promise<void> {
     return;
   }
 
-  // Identity Validation
-  if (activeContext?.accountEmail) {
+  // Identity / linkage (oauth rows from GET /session/me — cached for API headers)
+  if (activeContext?.platform) {
     try {
-      const { fetchConnections, startGoogleOauth, startNotionOauth } = await import('../shared/api.js');
-      const connections = await (connectionsPromise || fetchConnections());
-      connectionsPromise = Promise.resolve(connections); // Cache it
+      const session = await (sessionPromise ?? fetchSessionMe());
+      sessionPromise = Promise.resolve(session);
 
-      const isLinked = connections.some(c => 
-        c.provider === activeContext.platform && 
-        c.account_email === activeContext.accountEmail
-      );
+      const oauthAccounts = session.oauthAccounts;
+      const linked = isContextLinked(activeContext.platform, oauthAccounts, {
+        accountId: activeContext.accountId,
+      });
 
-      if (!isLinked) {
+      if (!linked) {
         unlinkedWarning.classList.remove('hidden');
-        el('unlinkedText').textContent = `${activeContext.accountEmail} is not linked to DriveSense.`;
+        const resolved = resolveAccountIdForPlatform(
+          activeContext.platform,
+          oauthAccounts,
+          activeContext.accountId,
+        );
+        el('unlinkedText').textContent = resolved
+          ? `Account ${resolved.length > 14 ? `${resolved.slice(0, 8)}…` : resolved} is not linked to DriveSense.`
+          : `Link this ${activeContext.platform === 'google_drive' ? 'Google' : 'Notion'} account in DriveSense.`;
         dot.className = 'status-dot pending';
-        
-        // Update the link button to trigger OAuth directly
+
         el('linkCurrentAccount').onclick = async () => {
           try {
-            const url = activeContext.platform === 'google_drive' 
-              ? await startGoogleOauth() 
-              : await startNotionOauth();
+            const url =
+              activeContext.platform === 'google_drive'
+                ? await startGoogleOauth()
+                : await startNotionOauth();
             void chrome.tabs.create({ url });
           } catch (err) {
             console.error('OAuth start failed', err);
@@ -154,19 +169,19 @@ async function refreshStatus(): Promise<void> {
 
   if (count > 0) {
     dot.className = 'status-dot pending';
-    if (!activeContext?.accountEmail) {
+    if (!activeContext?.accountId) {
       text.textContent = `${count} items waiting for review`;
     }
   } else {
     dot.className = 'status-dot watching';
-    if (!activeContext?.accountEmail) {
+    if (!activeContext?.accountId) {
       text.textContent = 'Watching items';
     }
   }
 }
 
-// Global variable to cache connections for a single popup session
-let connectionsPromise: Promise<Array<{ provider: string, account_email: string }>> | null = null;
+/** Cached session fetch for one popup session */
+let sessionPromise: Promise<Awaited<ReturnType<typeof fetchSessionMe>>> | null = null;
 
 // ─── Initialise form values from storage ─────────────────────────────────────
 
@@ -201,6 +216,7 @@ el('saveKeys').addEventListener('click', async () => {
 });
 
 el('refreshBtn').addEventListener('click', () => {
+  sessionPromise = null;
   setFooterStatus('Still looking…');
   void refreshStatus().then(() => {
     setFooterStatus('Refreshed', 'success');
@@ -226,10 +242,7 @@ el('byokToggle').addEventListener('click', () => {
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 
 function initialize(): void {
-  void Promise.all([
-    populateByokFields(),
-    refreshStatus(),
-  ]);
+  void Promise.all([populateByokFields(), refreshStatus()]);
 }
 
 if (document.readyState === 'loading') {

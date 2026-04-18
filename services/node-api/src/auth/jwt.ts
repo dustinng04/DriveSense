@@ -37,11 +37,14 @@ export async function verifyAccessToken(token: string): Promise<VerifiedAccessTo
   };
 }
 
-export async function generateAccessToken(userId: string): Promise<string> {
+export async function generateAccessToken(
+  userId: string,
+  extraPayload: Record<string, unknown> = {},
+): Promise<string> {
   const audience = sanitizeAudience(config.supabaseJwtAudience) ?? "authenticated";
   const issuer = sanitizeIssuer(config.supabaseJwtIssuer);
 
-  const jwt = new SignJWT({ sub: userId, role: "authenticated" })
+  const jwt = new SignJWT({ sub: userId, role: "authenticated", ...extraPayload })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(userId)
     .setIssuedAt()

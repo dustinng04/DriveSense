@@ -9,8 +9,10 @@ import { createOauthState, verifyOauthState } from "../integrations/oauthState.j
 import {
   deleteGoogleDriveConnection,
   getGoogleDriveConnection,
+  listGoogleDriveAccountSummaries,
   upsertGoogleDriveConnection,
   type GoogleDriveConnection,
+  type GoogleDriveTokenWriteInput,
 } from "./repository.js";
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
@@ -46,6 +48,18 @@ function sanitizeTokenWrite(input: GoogleTokenResponse, fallbackRefreshToken: st
     tokenScope: input.scope ?? null,
     tokenType: input.token_type ?? null,
     expiryDate,
+  };
+}
+
+function buildGoogleDriveWrite(
+  tokens: GoogleTokenResponse,
+  fallbackRefreshToken: string | null,
+  accountId: string,
+): GoogleDriveTokenWriteInput {
+  const base = sanitizeTokenWrite(tokens, fallbackRefreshToken);
+  return {
+    ...base,
+    accountId,
   };
 }
 
@@ -119,6 +133,45 @@ async function refreshAccessToken(refreshToken: string): Promise<GoogleTokenResp
   return (await response.json()) as GoogleTokenResponse;
 }
 
+/** Google OAuth user id (`sub`), used as DriveSense `account_id` for google_drive connections. */
+async function fetchGoogleUserId(accessToken: string): Promise<string> {
+  const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!userInfoRes.ok) {
+    throw new Error(`Failed to fetch Google user info: ${await userInfoRes.text()}`);
+  }
+
+  const userInfo = await userInfoRes.json() as { id?: string };
+  if (!userInfo.id?.trim()) {
+    throw new Error("Google OAuth did not return a user id.");
+  }
+
+  return userInfo.id.trim();
+}
+
+/** Used only for DriveSense auth user creation — not persisted on oauth_connections. */
+async function fetchGoogleLoginIdentity(accessToken: string): Promise<{ id: string; email: string }> {
+  const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!userInfoRes.ok) {
+    throw new Error(`Failed to fetch Google user info: ${await userInfoRes.text()}`);
+  }
+
+  const userInfo = await userInfoRes.json() as { email?: string; id?: string };
+  if (!userInfo.email?.trim()) {
+    throw new Error("Google OAuth did not return an email address.");
+  }
+  if (!userInfo.id?.trim()) {
+    throw new Error("Google OAuth did not return a user id.");
+  }
+
+  return { id: userInfo.id.trim(), email: userInfo.email.trim() };
+}
+
 function isExpired(connection: GoogleDriveConnection): boolean {
   if (!connection.expiryDate) {
     return false;
@@ -132,8 +185,8 @@ function isExpired(connection: GoogleDriveConnection): boolean {
   return expiresAt <= Date.now() + 60_000;
 }
 
-async function getAccessToken(userId: string, options?: { forceRefresh?: boolean }): Promise<string> {
-  const connection = await getGoogleDriveConnection(userId);
+async function getAccessToken(userId: string, accountId: string, options?: { forceRefresh?: boolean }): Promise<string> {
+  const connection = await getGoogleDriveConnection(userId, accountId);
   if (!connection) {
     throw new IntegrationNotConnectedError("Google Drive");
   }
@@ -150,13 +203,14 @@ async function getAccessToken(userId: string, options?: { forceRefresh?: boolean
   const refreshed = await refreshAccessToken(connection.refreshToken);
   const next = await upsertGoogleDriveConnection(
     userId,
-    sanitizeTokenWrite(refreshed, connection.refreshToken),
+    buildGoogleDriveWrite(refreshed, connection.refreshToken, connection.accountId),
   );
   return next.accessToken;
 }
 
 async function driveRequest(
   userId: string,
+  accountId: string,
   path: string,
   options?: {
     method?: string;
@@ -188,9 +242,9 @@ async function driveRequest(
     });
   };
 
-  let response = await runRequest(await getAccessToken(userId));
-  if ((response.status === 401 || response.status === 403) && (await getGoogleDriveConnection(userId))?.refreshToken) {
-    response = await runRequest(await getAccessToken(userId, { forceRefresh: true }));
+  let response = await runRequest(await getAccessToken(userId, accountId));
+  if ((response.status === 401 || response.status === 403) && (await getGoogleDriveConnection(userId, accountId))?.refreshToken) {
+    response = await runRequest(await getAccessToken(userId, accountId, { forceRefresh: true }));
   }
 
   if (!response.ok) {
@@ -249,7 +303,6 @@ export async function getGoogleDriveLoginUrl(): Promise<string> {
   url.searchParams.set("client_id", config.googleDriveClientId!);
   url.searchParams.set("redirect_uri", config.googleDriveOauthRedirectUri!);
   url.searchParams.set("response_type", "code");
-  // Add email and profile scopes to fetch user info for login
   url.searchParams.set("scope", DRIVE_SCOPE + " email profile");
   url.searchParams.set("access_type", "offline");
   url.searchParams.set("prompt", "consent");
@@ -262,64 +315,54 @@ export async function getGoogleDriveLoginUrl(): Promise<string> {
 export async function handleGoogleDriveOAuthCallback(params: { code: string; state: string }) {
   const userId = await verifyGoogleDriveOauthState(params.state);
   const tokens = await exchangeCodeForTokens(params.code);
+  const id = await fetchGoogleUserId(tokens.access_token);
 
-  await upsertGoogleDriveConnection(userId, sanitizeTokenWrite(tokens, null));
+  await upsertGoogleDriveConnection(userId, buildGoogleDriveWrite(tokens, null, id));
   return userId;
 }
 
 export async function handleGoogleDriveLoginCallback(params: { code: string; state: string }): Promise<string> {
   const { verifyLoginState } = await import("../integrations/oauthState.js");
   const { getOrCreateAuthUser } = await import("../auth/admin.js");
-  
+
   await verifyLoginState(params.state, "google-drive-login");
   const tokens = await exchangeCodeForTokens(params.code);
 
-  // Fetch user info using the access token
-  const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
-    headers: { Authorization: `Bearer ${tokens.access_token}` },
-  });
+  const { id, email } = await fetchGoogleLoginIdentity(tokens.access_token);
 
-  if (!userInfoRes.ok) {
-    throw new Error(`Failed to fetch Google user info: ${await userInfoRes.text()}`);
-  }
+  const userId = await getOrCreateAuthUser(email);
+  await upsertGoogleDriveConnection(userId, buildGoogleDriveWrite(tokens, null, id));
 
-  const userInfo = await userInfoRes.json() as { email: string; id: string };
-  if (!userInfo.email) {
-    throw new Error("Google OAuth did not return an email address.");
-  }
-
-  const userId = await getOrCreateAuthUser(userInfo.email);
-  await upsertGoogleDriveConnection(userId, sanitizeTokenWrite(tokens, null));
-  
   return userId;
 }
 
 export async function getGoogleDriveConnectionStatus(userId: string) {
-  const connection = await getGoogleDriveConnection(userId);
-  if (!connection) {
-    return { connected: false };
+  const accounts = await listGoogleDriveAccountSummaries(userId);
+  if (accounts.length === 0) {
+    return { connected: false as const, accounts: [] as const };
   }
 
   return {
-    connected: true,
-    tokenScope: connection.tokenScope,
-    tokenType: connection.tokenType,
-    expiryDate: connection.expiryDate,
-    updatedAt: connection.updatedAt,
+    connected: true as const,
+    accounts: accounts.map((a) => ({
+      accountId: a.accountId,
+      isPrimary: a.isPrimary,
+    })),
   };
 }
 
-export async function disconnectGoogleDrive(userId: string) {
-  await deleteGoogleDriveConnection(userId);
+export async function disconnectGoogleDrive(userId: string, accountId: string) {
+  await deleteGoogleDriveConnection(userId, accountId);
 }
 
 export async function listGoogleDriveFiles(params: {
   userId: string;
+  accountId: string;
   q?: string;
   pageToken?: string;
   pageSize?: number;
 }) {
-  const response = await driveRequest(params.userId, "/files", {
+  const response = await driveRequest(params.userId, params.accountId, "/files", {
     query: {
       q: params.q ?? "trashed = false",
       pageSize: params.pageSize ?? 25,
@@ -334,8 +377,8 @@ export async function listGoogleDriveFiles(params: {
   return response.json();
 }
 
-export async function readGoogleDriveFileMetadata(userId: string, fileId: string) {
-  const response = await driveRequest(userId, `/files/${encodeURIComponent(fileId)}`, {
+export async function readGoogleDriveFileMetadata(userId: string, accountId: string, fileId: string) {
+  const response = await driveRequest(userId, accountId, `/files/${encodeURIComponent(fileId)}`, {
     query: {
       fields: "id, name, mimeType, parents, trashed, modifiedTime, webViewLink, size",
       supportsAllDrives: "true",
@@ -345,18 +388,18 @@ export async function readGoogleDriveFileMetadata(userId: string, fileId: string
   return response.json();
 }
 
-export async function readGoogleDriveFileContent(userId: string, fileId: string) {
-  const metadata = (await readGoogleDriveFileMetadata(userId, fileId)) as { mimeType: string; name: string };
+export async function readGoogleDriveFileContent(userId: string, accountId: string, fileId: string) {
+  const metadata = (await readGoogleDriveFileMetadata(userId, accountId, fileId)) as { mimeType: string; name: string };
 
   let response: Response;
   if (metadata.mimeType.startsWith("application/vnd.google-apps")) {
-    response = await driveRequest(userId, `/files/${encodeURIComponent(fileId)}/export`, {
+    response = await driveRequest(userId, accountId, `/files/${encodeURIComponent(fileId)}/export`, {
       query: {
         mimeType: buildGoogleExportMimeType(metadata.mimeType),
       },
     });
   } else {
-    response = await driveRequest(userId, `/files/${encodeURIComponent(fileId)}`, {
+    response = await driveRequest(userId, accountId, `/files/${encodeURIComponent(fileId)}`, {
       query: {
         alt: "media",
         supportsAllDrives: "true",
@@ -377,8 +420,8 @@ export async function readGoogleDriveFileContent(userId: string, fileId: string)
   };
 }
 
-export async function moveGoogleDriveFile(userId: string, fileId: string, folderId: string) {
-  const current = (await driveRequest(userId, `/files/${encodeURIComponent(fileId)}`, {
+export async function moveGoogleDriveFile(userId: string, accountId: string, fileId: string, folderId: string) {
+  const current = (await driveRequest(userId, accountId, `/files/${encodeURIComponent(fileId)}`, {
     query: {
       fields: "id, parents",
       supportsAllDrives: "true",
@@ -386,7 +429,7 @@ export async function moveGoogleDriveFile(userId: string, fileId: string, folder
   }).then((res) => res.json())) as { parents?: string[] };
 
   const removeParents = (current.parents ?? []).join(",");
-  const response = await driveRequest(userId, `/files/${encodeURIComponent(fileId)}`, {
+  const response = await driveRequest(userId, accountId, `/files/${encodeURIComponent(fileId)}`, {
     method: "PATCH",
     query: {
       addParents: folderId,
@@ -399,8 +442,8 @@ export async function moveGoogleDriveFile(userId: string, fileId: string, folder
   return response.json();
 }
 
-export async function trashGoogleDriveFile(userId: string, fileId: string) {
-  const response = await driveRequest(userId, `/files/${encodeURIComponent(fileId)}`, {
+export async function trashGoogleDriveFile(userId: string, accountId: string, fileId: string) {
+  const response = await driveRequest(userId, accountId, `/files/${encodeURIComponent(fileId)}`, {
     method: "PATCH",
     query: {
       fields: "id, name, trashed, modifiedTime",

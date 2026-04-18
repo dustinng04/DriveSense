@@ -13,10 +13,10 @@ const FOLDER_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const STORAGE_SIZE_LIMIT = 9 * 1024 * 1024; // 9MB (leave 1MB buffer under Chrome's 10MB limit)
 
 /**
- * Compose a flat key for the index from platform, account email, and resource ID.
+ * Compose a flat key for the index from platform, OAuth account id (`account_id`), and resource ID.
  */
-function composeKey(platform: Platform, accountEmail: string, resourceId: string): string {
-  return `${platform}:${accountEmail}:${resourceId}`;
+function composeKey(platform: Platform, accountId: string, resourceId: string): string {
+  return `${platform}:${accountId}:${resourceId}`;
 }
 
 /**
@@ -57,11 +57,11 @@ async function getIndex(): Promise<MetadataIndex> {
  */
 export async function isFolderCrawlFresh(
   platform: Platform,
-  accountEmail: string,
+  accountId: string,
   folderId: string,
 ): Promise<boolean> {
   const index = await getIndex();
-  const key = composeKey(platform, accountEmail, folderId);
+  const key = composeKey(platform, accountId, folderId);
   const crawlState = index.folderCrawls[key];
   return crawlState ? isCrawlFresh(crawlState) : false;
 }
@@ -72,21 +72,21 @@ export async function isFolderCrawlFresh(
  */
 export async function getFilesInFolderFromIndex(
   platform: Platform,
-  accountEmail: string,
+  accountId: string,
   folderId: string,
 ): Promise<IndexedFile[]> {
   const index = await getIndex();
-  const folderKey = composeKey(platform, accountEmail, folderId);
+  const folderKey = composeKey(platform, accountId, folderId);
 
   // If folder is not in index or crawl is stale, return empty (caller should fetch from API)
   if (!index.folderCrawls[folderKey] || !isCrawlFresh(index.folderCrawls[folderKey])) {
     return [];
   }
 
-  // Collect all entries whose parentFolderIds includes this folder
-  return Object.values(index.entries).filter((file) =>
-    file.parentFolderIds.includes(folderId)
-  );
+  const prefix = `${platform}:${accountId}:`;
+  return Object.entries(index.entries)
+    .filter(([key, file]) => key.startsWith(prefix) && file.parentFolderIds.includes(folderId))
+    .map(([, file]) => file);
 }
 
 /**
@@ -94,18 +94,18 @@ export async function getFilesInFolderFromIndex(
  * Handles multi-folder tracking and cleans up ghost entries.
  *
  * @param platform - Platform (google_drive or notion)
- * @param accountEmail - Account email for namespacing
+ * @param accountId - OAuth `account_id` for namespacing
  * @param folderId - Folder/page ID being crawled
  * @param scannedFiles - Files returned from platform API list call
  */
 export async function upsertFilesFromCrawl(
   platform: Platform,
-  accountEmail: string,
+  accountId: string,
   folderId: string,
   scannedFiles: IndexedFile[],
 ): Promise<void> {
   const index = await getIndex();
-  const folderKey = composeKey(platform, accountEmail, folderId);
+  const folderKey = composeKey(platform, accountId, folderId);
   const now = Date.now();
 
   // Build a set of file IDs currently in this folder
@@ -132,7 +132,7 @@ export async function upsertFilesFromCrawl(
 
   // Upsert new/updated files
   for (const scannedFile of scannedFiles) {
-    const fileKey = composeKey(platform, accountEmail, scannedFile.id);
+    const fileKey = composeKey(platform, accountId, scannedFile.id);
     const existing = index.entries[fileKey];
 
     if (existing) {
@@ -170,12 +170,12 @@ export async function upsertFilesFromCrawl(
  */
 export async function markFilesSynced(
   platform: Platform,
-  accountEmail: string,
+  accountId: string,
   fileIds: string[],
 ): Promise<void> {
   const index = await getIndex();
   for (const fileId of fileIds) {
-    const key = composeKey(platform, accountEmail, fileId);
+    const key = composeKey(platform, accountId, fileId);
     if (index.entries[key]) {
       index.entries[key].serverSynced = true;
     }
@@ -189,13 +189,14 @@ export async function markFilesSynced(
  */
 export async function getCandidatesForOrchestrator(
   platform: Platform,
-  accountEmail: string,
+  accountId: string,
   folderId: string,
 ): Promise<IndexedFile[]> {
   const index = await getIndex();
-  return Object.values(index.entries).filter((file) =>
-    file.parentFolderIds.includes(folderId)
-  );
+  const prefix = `${platform}:${accountId}:`;
+  return Object.entries(index.entries)
+    .filter(([key, file]) => key.startsWith(prefix) && file.parentFolderIds.includes(folderId))
+    .map(([, file]) => file);
 }
 
 /**
@@ -204,10 +205,13 @@ export async function getCandidatesForOrchestrator(
  */
 export async function getAllIndexedFiles(
   platform: Platform,
-  accountEmail: string,
+  accountId: string,
 ): Promise<IndexedFile[]> {
   const index = await getIndex();
-  return Object.values(index.entries).filter((f) => f.platform === platform);
+  const prefix = `${platform}:${accountId}:`;
+  return Object.entries(index.entries)
+    .filter(([key, f]) => key.startsWith(prefix) && f.platform === platform)
+    .map(([, f]) => f);
 }
 
 /**
@@ -215,11 +219,11 @@ export async function getAllIndexedFiles(
  */
 export async function touchFolderAccess(
   platform: Platform,
-  accountEmail: string,
+  accountId: string,
   folderId: string,
 ): Promise<void> {
   const index = await getIndex();
-  const folderKey = composeKey(platform, accountEmail, folderId);
+  const folderKey = composeKey(platform, accountId, folderId);
   if (index.folderCrawls[folderKey]) {
     index.folderCrawls[folderKey].lastAccessedAt = Date.now();
     await storageSet({ metadataIndex: index });
@@ -267,7 +271,7 @@ async function evictIfNeeded(index: MetadataIndex): Promise<void> {
 
   if (!lruFolderKey) return; // No folders to evict
 
-  // Extract folder ID from key (format: "platform:email:folderId")
+  // Extract folder ID from key (format: "platform:accountId:folderId")
   const [, , folderId] = lruFolderKey.split(':');
   if (!folderId) return;
 

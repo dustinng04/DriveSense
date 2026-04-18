@@ -42,35 +42,19 @@ function extractFileId(): string | undefined {
   return undefined;
 }
 
-function detectAccountIdentity(platform: Platform): string | undefined {
+/**
+ * Best-effort OAuth `account_id` for the active session (matches server persistence).
+ * When this returns undefined and multiple accounts are linked, the user must rely on popup/session state.
+ */
+function detectPlatformAccountId(platform: Platform): string | undefined {
   if (platform === 'google_drive') {
-    // 1. Try the Account button aria-label (Common pattern: "Google Account: Name (email@gmail.com)")
-    const accountBtn = document.querySelector('a[href*="accounts.google.com/SignOutOptions"]');
-    if (accountBtn) {
-      const label = accountBtn.getAttribute('aria-label') || '';
-      const emailMatch = label.match(/\(([^)]+)\)/);
-      if (emailMatch) return emailMatch[1];
-    }
-
-    // 2. Try the "og:email" or similar if present (unlikely in Drive but good fallback)
-    const metaEmail = document.querySelector('meta[name="email"]')?.getAttribute('content');
-    if (metaEmail) return metaEmail;
-
-    // 3. Try searching for @gmail.com or @ in specific user UI elements
-    const userEmailEl = document.querySelector('.gb_de'); // Common class for user email in Google header
-    if (userEmailEl?.textContent?.includes('@')) return userEmailEl.textContent.trim();
+    const blob = [...document.scripts].map((s) => s.textContent ?? '').join('\n');
+    const truncated = blob.length > 6_000_000 ? blob.slice(0, 6_000_000) : blob;
+    const m =
+      truncated.match(/"user_id"\s*:\s*"(\d{6,})"/) ??
+      truncated.match(/"oauth2_user_id"\s*:\s*"(\d+)"/);
+    return m?.[1];
   }
-
-  if (platform === 'notion') {
-    // Notion stores some state in __INITIAL_STATE__ or we can peek at the sidebar if it's open
-    // For now, we'll try to find an email-like string in the sidebar/account-switcher
-    const sidebarAccount = document.querySelector('.notion-sidebar-user-menu');
-    if (sidebarAccount?.textContent?.includes('@')) {
-      const match = sidebarAccount.textContent.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-      if (match) return match[0];
-    }
-  }
-
   return undefined;
 }
 
@@ -212,14 +196,14 @@ async function init(): Promise<void> {
   console.debug(LOG_PREFIX, `detected ${platform} context`, { fileId, url: window.location.href });
 
   // Tell background worker about the current context
-  const accountEmail = detectAccountIdentity(platform);
+  const accountId = detectPlatformAccountId(platform);
   try {
     await sendMessage({
       type: 'CONTEXT_DETECTED',
       platform,
       url: window.location.href,
       fileId,
-      accountEmail,
+      accountId,
     });
   } catch (error) {
     console.debug(LOG_PREFIX, 'background not available yet', error);

@@ -1,4 +1,6 @@
 import { Router, type Request, type Response } from "express";
+import type { PlatformAccountLocals } from "../auth/platformAccount.js";
+import { requirePlatformAccount } from "../auth/platformAccount.js";
 import type { AuthenticatedRequestContext } from "../auth/types.js";
 import { config } from "../config.js";
 import {
@@ -14,6 +16,7 @@ import { maybeRedirectAfterOAuth, parsePageSize, sendErrorResponse } from "../in
 
 interface AuthenticatedLocals {
   auth: AuthenticatedRequestContext;
+  platform?: PlatformAccountLocals;
 }
 
 export const notionRouter = Router();
@@ -91,10 +94,10 @@ notionOAuthRouter.get("/login/callback", async (req: Request, res: Response) => 
 
   try {
     const { handleNotionLoginCallback } = await import("./service.js");
-    const { generateAccessToken } = await import("../auth/jwt.js");
+    const { generateAccessTokenWithLinkedAccounts } = await import("../auth/accessTokenWithOAuth.js");
 
     const userId = await handleNotionLoginCallback({ code, state });
-    const token = await generateAccessToken(userId);
+    const token = await generateAccessTokenWithLinkedAccounts(userId);
 
     // Redirect to the success page with the token
     return res.redirect(`${dashboardUrl}/oauth-success?token=${encodeURIComponent(token)}`);
@@ -124,9 +127,10 @@ notionRouter.get("/oauth/status", async (_req: Request, res: Response<unknown, A
 
 notionRouter.delete(
   "/oauth/connection",
+  requirePlatformAccount("notion"),
   async (_req: Request, res: Response<unknown, AuthenticatedLocals>) => {
     try {
-      await disconnectNotion(res.locals.auth.userId);
+      await disconnectNotion(res.locals.auth.userId, res.locals.platform!.accountId);
       return res.status(204).send();
     } catch (error) {
       return sendErrorResponse(res, "Failed to disconnect Notion.", error);
@@ -136,6 +140,7 @@ notionRouter.delete(
 
 notionRouter.post(
   "/databases/:databaseId/query",
+  requirePlatformAccount("notion"),
   async (
     req: Request<{ databaseId: string }, unknown, { filter?: unknown; sorts?: unknown; startCursor?: unknown }>,
     res: Response<unknown, AuthenticatedLocals>,
@@ -155,6 +160,7 @@ notionRouter.post(
     try {
       const payload = await queryNotionDatabase({
         userId: res.locals.auth.userId,
+        accountId: res.locals.platform!.accountId,
         databaseId: req.params.databaseId,
         filter: req.body?.filter,
         sorts: req.body?.sorts,
@@ -170,9 +176,14 @@ notionRouter.post(
 
 notionRouter.get(
   "/pages/:pageId",
+  requirePlatformAccount("notion"),
   async (req: Request<{ pageId: string }>, res: Response<unknown, AuthenticatedLocals>) => {
     try {
-      const page = await readNotionPage(res.locals.auth.userId, req.params.pageId);
+      const page = await readNotionPage(
+        res.locals.auth.userId,
+        res.locals.platform!.accountId,
+        req.params.pageId,
+      );
       return res.json(page);
     } catch (error) {
       return sendErrorResponse(res, "Failed to read Notion page.", error);
@@ -182,6 +193,7 @@ notionRouter.get(
 
 notionRouter.patch(
   "/pages/:pageId",
+  requirePlatformAccount("notion"),
   async (
     req: Request<
       { pageId: string },
@@ -203,6 +215,7 @@ notionRouter.patch(
     try {
       const page = await updateNotionPage({
         userId: res.locals.auth.userId,
+        accountId: res.locals.platform!.accountId,
         pageId: req.params.pageId,
         properties: req.body?.properties,
         icon: req.body?.icon,

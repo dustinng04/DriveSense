@@ -139,10 +139,10 @@ async function handleMessage(message: BackgroundMessage): Promise<BackgroundResp
       await chrome.storage.local.set({
         activeContext: {
           platform: message.platform,
-          accountEmail: message.accountEmail,
+          accountId: message.accountId,
           url: message.url,
           fileId: message.fileId,
-        }
+        },
       });
       void refreshSuggestions();
       return { type: 'OK' };

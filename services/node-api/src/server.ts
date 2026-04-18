@@ -8,6 +8,7 @@ import { skillLoader } from "./skills/loader.js";
 import type { ContextMetadata } from "./context/types.js";
 import type { SkillOperation } from "./skills/types.js";
 import { generateValidationSuggestions } from "./suggestions/devValidation.js";
+import { getLinkedAccountsPayload, listOAuthAccountSummaries } from "./integrations/oauthConnectionsRepository.js";
 import { requireAuth } from "./auth/middleware.js";
 import { settingsRouter } from "./settings/routes.js";
 import { suggestionsRouter } from "./suggestions/routes.js";
@@ -44,7 +45,7 @@ export function createApp() {
       },
       credentials: true,
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization"],
+      allowedHeaders: ["Content-Type", "Authorization", "X-Platform-Account"],
     }),
   );
   app.use(express.json());
@@ -154,16 +155,25 @@ export function createApp() {
     }
   });
 
-  app.get(
-    "/session/me",
-    requireAuth,
-    (_req, res: express.Response<unknown, AuthenticatedLocals>) => {
+  app.get("/session/me", requireAuth, async (_req, res: express.Response<unknown, AuthenticatedLocals>) => {
+    try {
+      const [linkedAccounts, oauthAccounts] = await Promise.all([
+        getLinkedAccountsPayload(res.locals.auth.userId),
+        listOAuthAccountSummaries(res.locals.auth.userId),
+      ]);
       return res.json({
         userId: res.locals.auth.userId,
         claims: res.locals.auth.claims,
+        linkedAccounts,
+        oauthAccounts,
       });
-    },
-  );
+    } catch (error) {
+      return res.status(500).json({
+        error: "Failed to load session.",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  });
 
   app.use("/oauth/google-drive", googleDriveOAuthRouter);
   app.use("/oauth/notion", notionOAuthRouter);

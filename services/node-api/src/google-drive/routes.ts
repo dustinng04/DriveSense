@@ -1,4 +1,6 @@
 import { Router, type Request, type Response } from "express";
+import type { PlatformAccountLocals } from "../auth/platformAccount.js";
+import { requirePlatformAccount } from "../auth/platformAccount.js";
 import type { AuthenticatedRequestContext } from "../auth/types.js";
 import {
   disconnectGoogleDrive,
@@ -16,6 +18,7 @@ import { maybeRedirectAfterOAuth, parsePageSize, sendErrorResponse } from "../in
 
 interface AuthenticatedLocals {
   auth: AuthenticatedRequestContext;
+  platform?: PlatformAccountLocals;
 }
 
 export const googleDriveRouter = Router();
@@ -100,10 +103,10 @@ googleDriveOAuthRouter.get("/login/callback", async (req: Request, res: Response
 
   try {
     const { handleGoogleDriveLoginCallback } = await import("./service.js");
-    const { generateAccessToken } = await import("../auth/jwt.js");
+    const { generateAccessTokenWithLinkedAccounts } = await import("../auth/accessTokenWithOAuth.js");
 
     const userId = await handleGoogleDriveLoginCallback({ code, state });
-    const token = await generateAccessToken(userId);
+    const token = await generateAccessTokenWithLinkedAccounts(userId);
 
     // Redirect to the success page with the token
     return res.redirect(`${dashboardUrl}/oauth-success?token=${encodeURIComponent(token)}`);
@@ -139,9 +142,10 @@ googleDriveRouter.get(
 
 googleDriveRouter.delete(
   "/oauth/connection",
+  requirePlatformAccount("google_drive"),
   async (_req: Request, res: Response<unknown, AuthenticatedLocals>) => {
     try {
-      await disconnectGoogleDrive(res.locals.auth.userId);
+      await disconnectGoogleDrive(res.locals.auth.userId, res.locals.platform!.accountId);
       return res.status(204).send();
     } catch (error) {
       return sendErrorResponse(res, "Failed to disconnect Google Drive.", error);
@@ -149,7 +153,7 @@ googleDriveRouter.delete(
   },
 );
 
-googleDriveRouter.get("/files", async (req: Request, res: Response<unknown, AuthenticatedLocals>) => {
+googleDriveRouter.get("/files", requirePlatformAccount("google_drive"), async (req: Request, res: Response<unknown, AuthenticatedLocals>) => {
   let pageSize: number | undefined;
   try {
     pageSize = parsePageSize(req.query.pageSize);
@@ -160,6 +164,7 @@ googleDriveRouter.get("/files", async (req: Request, res: Response<unknown, Auth
   try {
     const files = await listGoogleDriveFiles({
       userId: res.locals.auth.userId,
+      accountId: res.locals.platform!.accountId,
       q: typeof req.query.q === "string" ? req.query.q : undefined,
       pageToken: typeof req.query.pageToken === "string" ? req.query.pageToken : undefined,
       pageSize,
@@ -173,9 +178,14 @@ googleDriveRouter.get("/files", async (req: Request, res: Response<unknown, Auth
 
 googleDriveRouter.get(
   "/files/:fileId",
+  requirePlatformAccount("google_drive"),
   async (req: Request<{ fileId: string }>, res: Response<unknown, AuthenticatedLocals>) => {
     try {
-      const file = await readGoogleDriveFileMetadata(res.locals.auth.userId, req.params.fileId);
+      const file = await readGoogleDriveFileMetadata(
+        res.locals.auth.userId,
+        res.locals.platform!.accountId,
+        req.params.fileId,
+      );
       return res.json(file);
     } catch (error) {
       return sendErrorResponse(res, "Failed to read Google Drive file metadata.", error);
@@ -185,9 +195,14 @@ googleDriveRouter.get(
 
 googleDriveRouter.get(
   "/files/:fileId/content",
+  requirePlatformAccount("google_drive"),
   async (req: Request<{ fileId: string }>, res: Response<unknown, AuthenticatedLocals>) => {
     try {
-      const file = await readGoogleDriveFileContent(res.locals.auth.userId, req.params.fileId);
+      const file = await readGoogleDriveFileContent(
+        res.locals.auth.userId,
+        res.locals.platform!.accountId,
+        req.params.fileId,
+      );
       return res.json(file);
     } catch (error) {
       return sendErrorResponse(res, "Failed to read Google Drive file content.", error);
@@ -197,6 +212,7 @@ googleDriveRouter.get(
 
 googleDriveRouter.post(
   "/files/:fileId/move",
+  requirePlatformAccount("google_drive"),
   async (
     req: Request<{ fileId: string }, unknown, { folderId?: unknown }>,
     res: Response<unknown, AuthenticatedLocals>,
@@ -208,6 +224,7 @@ googleDriveRouter.post(
     try {
       const file = await moveGoogleDriveFile(
         res.locals.auth.userId,
+        res.locals.platform!.accountId,
         req.params.fileId,
         req.body.folderId.trim(),
       );
@@ -220,9 +237,14 @@ googleDriveRouter.post(
 
 googleDriveRouter.post(
   "/files/:fileId/trash",
+  requirePlatformAccount("google_drive"),
   async (req: Request<{ fileId: string }>, res: Response<unknown, AuthenticatedLocals>) => {
     try {
-      const file = await trashGoogleDriveFile(res.locals.auth.userId, req.params.fileId);
+      const file = await trashGoogleDriveFile(
+        res.locals.auth.userId,
+        res.locals.platform!.accountId,
+        req.params.fileId,
+      );
       return res.json(file);
     } catch (error) {
       return sendErrorResponse(res, "Failed to trash Google Drive file.", error);

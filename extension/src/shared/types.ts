@@ -6,6 +6,13 @@
  */
 
 export type Platform = 'google_drive' | 'notion';
+
+/** Mirrors node-api `oauth_connections` summary rows (non-secret). */
+export interface OAuthAccountSummary {
+  provider: Platform;
+  accountId: string;
+  isPrimary: boolean;
+}
 export type Provider = 'gemini' | 'openai' | 'anthropic' | 'glm';
 export type SuggestionAction = 'archive' | 'merge' | 'rename' | 'review';
 export type SuggestionStatus = 'pending' | 'confirmed' | 'skipped' | 'dismissed';
@@ -111,9 +118,9 @@ export interface FolderCrawlState {
 export interface MetadataIndex {
   /** Schema version; bump when IndexedFile shape or index structure changes */
   version: number;
-  /** Map of "platform:accountEmail:fileId" -> IndexedFile */
+  /** Map of "platform:accountId:fileId" -> IndexedFile (accountId matches OAuth `account_id`) */
   entries: Record<string, IndexedFile>;
-  /** Map of "platform:accountEmail:folderId" -> FolderCrawlState */
+  /** Map of "platform:accountId:folderId" -> FolderCrawlState */
   folderCrawls: Record<string, FolderCrawlState>;
 }
 
@@ -132,10 +139,13 @@ export interface ExtensionStorage {
   /** Currently active context detected by the content script */
   activeContext: {
     platform: Platform;
-    accountEmail?: string;
+    /** Stable platform OAuth `account_id`; when absent, extension may infer a single linked account for that provider */
+    accountId?: string;
     url: string;
     fileId?: string;
   } | null;
+  /** Last `/session/me` oauth rows — used to map context email → account id for API headers */
+  oauthAccountSummaries: OAuthAccountSummary[];
   /** Local metadata index for cross-folder comparison */
   metadataIndex: MetadataIndex;
 }
@@ -143,7 +153,13 @@ export interface ExtensionStorage {
 // --- Extension messaging ---
 
 export type BackgroundMessage =
-  | { type: 'CONTEXT_DETECTED'; platform: Platform; url: string; fileId?: string; accountEmail?: string }
+  | {
+      type: 'CONTEXT_DETECTED';
+      platform: Platform;
+      url: string;
+      fileId?: string;
+      accountId?: string;
+    }
   | { type: 'GET_BYOK_KEY'; provider: Provider }
   | { type: 'GET_PENDING_COUNT' }
   | { type: 'DISMISS_SUGGESTION'; id: string }
