@@ -9,7 +9,6 @@ import {
 
 interface SettingsRow {
   llm_provider: UserSettings["llmProvider"];
-  llm_model: string | null;
   timezone: string;
   prompt_logging_enabled: boolean;
   scan_schedule: UserSettings["scanSchedule"];
@@ -27,7 +26,6 @@ interface SettingsRow {
 function rowToUserSettings(row: SettingsRow): UserSettings {
   return {
     llmProvider: row.llm_provider,
-    llmModel: row.llm_model,
     timezone: row.timezone,
     promptLoggingEnabled: row.prompt_logging_enabled,
     scanSchedule: row.scan_schedule,
@@ -46,7 +44,6 @@ function rowToUserSettings(row: SettingsRow): UserSettings {
 function toWriteModel(settings: UserSettings) {
   return {
     llm_provider: settings.llmProvider,
-    llm_model: settings.llmModel,
     timezone: settings.timezone,
     prompt_logging_enabled: settings.promptLoggingEnabled,
     scan_schedule: settings.scanSchedule,
@@ -63,7 +60,6 @@ async function loadExistingSettings(client: PoolClient, userId: string): Promise
   const result = await client.query<SettingsRow>(
     `select
       llm_provider,
-      llm_model,
       timezone,
       prompt_logging_enabled,
       scan_schedule,
@@ -92,7 +88,6 @@ async function insertDefaultSettings(client: PoolClient, userId: string): Promis
     `insert into public.settings (
       user_id,
       llm_provider,
-      llm_model,
       timezone,
       prompt_logging_enabled,
       scan_schedule,
@@ -103,13 +98,12 @@ async function insertDefaultSettings(client: PoolClient, userId: string): Promis
       auto_confirm_actions,
       preferences
     ) values (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::jsonb
+      $1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11::jsonb
     )
     on conflict (user_id) do update
     set user_id = excluded.user_id
     returning
       llm_provider,
-      llm_model,
       timezone,
       prompt_logging_enabled,
       scan_schedule,
@@ -122,7 +116,6 @@ async function insertDefaultSettings(client: PoolClient, userId: string): Promis
     [
       userId,
       write.llm_provider,
-      write.llm_model,
       write.timezone,
       write.prompt_logging_enabled,
       write.scan_schedule,
@@ -169,20 +162,18 @@ export async function patchUserSettings(
       `update public.settings
       set
         llm_provider = $2,
-        llm_model = $3,
-        timezone = $4,
-        prompt_logging_enabled = $5,
-        scan_schedule = $6,
-        stale_after_days = $7,
-        not_accessed_after_days = $8,
-        similarity_threshold = $9,
-        suggestion_notifications = $10::jsonb,
-        auto_confirm_actions = $11,
-        preferences = $12::jsonb
+        timezone = $3,
+        prompt_logging_enabled = $4,
+        scan_schedule = $5,
+        stale_after_days = $6,
+        not_accessed_after_days = $7,
+        similarity_threshold = $8,
+        suggestion_notifications = $9::jsonb,
+        auto_confirm_actions = $10,
+        preferences = $11::jsonb
       where user_id = $1
       returning
         llm_provider,
-        llm_model,
         timezone,
         prompt_logging_enabled,
         scan_schedule,
@@ -195,7 +186,6 @@ export async function patchUserSettings(
       [
         userId,
         write.llm_provider,
-        write.llm_model,
         write.timezone,
         write.prompt_logging_enabled,
         write.scan_schedule,

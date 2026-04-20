@@ -43,14 +43,22 @@ begin
     where table_schema = 'public'
       and table_name = 'settings'
       and column_name = 'model'
-  ) and not exists (
+  ) then
+    alter table public.settings drop column model;
+  end if;
+end
+$$;
+
+do $$
+begin
+  if exists (
     select 1
     from information_schema.columns
     where table_schema = 'public'
       and table_name = 'settings'
       and column_name = 'llm_model'
   ) then
-    alter table public.settings rename column model to llm_model;
+    alter table public.settings drop column llm_model;
   end if;
 end
 $$;

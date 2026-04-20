@@ -55,7 +55,6 @@ create table if not exists public.settings (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade unique,
   llm_provider text not null default 'gemini',
-  model text,
   preference jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()

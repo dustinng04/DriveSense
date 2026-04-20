@@ -32,7 +32,6 @@ export interface Suggestion {
 
 export interface UserSettings {
   llmProvider: Provider;
-  llmModel: string | null;
 }
 
 // ---  Rules ---

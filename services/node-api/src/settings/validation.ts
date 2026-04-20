@@ -7,7 +7,6 @@ import {
 const scanSchedules = new Set<ScanSchedule>(["manual", "daily", "weekly"]);
 const allowedKeys = new Set([
   "llmProvider",
-  "llmModel",
   "timezone",
   "promptLoggingEnabled",
   "scanSchedule",
@@ -57,13 +56,6 @@ export function parseSettingsPatch(input: unknown): UserSettingsPatch {
       throw new Error(`llmProvider must be one of: ${LLM_PROVIDERS.join(", ")}.`);
     }
     patch.llmProvider = input.llmProvider as (typeof LLM_PROVIDERS)[number];
-  }
-
-  if (input.llmModel !== undefined) {
-    if (input.llmModel !== null && typeof input.llmModel !== "string") {
-      throw new Error("llmModel must be a string or null.");
-    }
-    patch.llmModel = input.llmModel;
   }
 
   if (input.timezone !== undefined) {

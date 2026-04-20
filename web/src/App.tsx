@@ -12,14 +12,7 @@ const PROVIDERS = ["gemini", "openai", "anthropic", "glm"] as const;
 type Provider = (typeof PROVIDERS)[number];
 type Platform = "google_drive" | "notion";
 
-const MODEL_OPTIONS: Record<Provider, { id: string; label: string }[]> = {
-  gemini:    [{ id: "gemini-3.1-pro", label: "Gemini 3.1 Pro" }, { id: "gemini-3-flash", label: "Gemini 3 Flash" }],
-  openai:    [{ id: "gpt-5.4", label: "GPT-5.4" }, { id: "gpt-5.4-mini", label: "GPT-5.4 mini" }, { id: "gpt-4o-mini", label: "gpt-4o-mini" }],
-  anthropic: [{ id: "claude-opus-4-6-latest", label: "Claude Opus 4.6" }, { id: "claude-sonnet-4-6-latest", label: "Claude Sonnet 4.6" }],
-  glm:       [{ id: "glm-5", label: "GLM-5" }, { id: "glm-4.7-flash", label: "GLM-4.7-Flash" }],
-};
-
-interface Settings { llmProvider: Provider; llmModel: string | null; }
+interface Settings { llmProvider: Provider; }
 interface FolderWhitelistRule { type: "folder_whitelist"; path: string; platform: Platform; }
 interface FolderBlacklistRule { type: "folder_blacklist"; path: string; platform: Platform; }
 interface FiletypeWhitelistRule { type: "filetype_whitelist"; allowed_types: string[]; }
@@ -185,7 +178,7 @@ export default function App() {
           {tab === "suggestions" && <SuggestionsPage suggestions={suggestions} mockPopup={mockPopup} loading={loading} token={token} onLoad={loadData} onUpdateSuggestion={updateSuggestion} onTriggerMock={() => setMockPopup({ id: `mock-${Date.now()}`, title: "Archive Stale File", description: "This file hasn't been modified in 2 years.", reason: "No activity since Jan 2024.", action: "archive", confidence: "high", status: "pending", fileIds: ["file123"], platform: "google_drive" })} />}
           {tab === "rules"       && <RulesPage rules={rules} loading={loading} token={token} whitelistEntries={whitelistEntries} blacklistEntries={blacklistEntries} filetypes={filetypes} keywords={keywords} filetypeIdx={filetypeIdx} keywordIdx={keywordIdx} saveRules={saveRules} />}
           {tab === "history"    && <HistoryPage history={undoHistory} loading={loading} onUndo={performUndo} />}
-          {tab === "settings"   && <SettingsPage settings={settings} keys={keys} tokenInput={tokenInput} loading={loading} onTokenInput={setTokenInput} onSaveToken={() => { localStorage.setItem(TOKEN_KEY, tokenInput); setToken(tokenInput); pushTokenToExtension(tokenInput); setStatus("Token saved"); }} onSaveKeys={() => { localStorage.setItem(KEYS_KEY, JSON.stringify(keys)); setStatus("API keys saved locally"); }} onKeysChange={setKeys} onSettingsChange={setSettings} onSaveSettings={async () => { if (!settings) return; await run("Saving settings…", async () => { const r = await req<{ settings: Settings }>("/settings", { method: "PATCH", body: JSON.stringify({ llmProvider: settings.llmProvider, llmModel: settings.llmModel?.trim() || null }) }); setSettings(r.settings); setStatus("Settings saved"); }); }} onLoad={loadData} />}
+          {tab === "settings"   && <SettingsPage settings={settings} keys={keys} tokenInput={tokenInput} loading={loading} onTokenInput={setTokenInput} onSaveToken={() => { localStorage.setItem(TOKEN_KEY, tokenInput); setToken(tokenInput); pushTokenToExtension(tokenInput); setStatus("Token saved"); }} onSaveKeys={() => { localStorage.setItem(KEYS_KEY, JSON.stringify(keys)); setStatus("API keys saved locally"); }} onKeysChange={setKeys} onSettingsChange={setSettings} onSaveSettings={async () => { if (!settings) return; await run("Saving settings…", async () => { const r = await req<{ settings: Settings }>("/settings", { method: "PATCH", body: JSON.stringify({ llmProvider: settings.llmProvider }) }); setSettings(r.settings); setStatus("Settings saved"); }); }} onLoad={loadData} />}
         </main>
       </div>
 
@@ -395,16 +388,8 @@ function SettingsPage({ settings, keys, tokenInput, loading, onTokenInput, onSav
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label className="form-label" htmlFor="llm-provider">Provider</label>
             <select id="llm-provider" className="select" value={settings?.llmProvider ?? "gemini"} disabled={loading}
-              onChange={e => { const v = e.target.value as Provider; onSettingsChange(settings ? { ...settings, llmProvider: v, llmModel: null } : { llmProvider: v, llmModel: null }); }}>
+              onChange={e => { const v = e.target.value as Provider; onSettingsChange(settings ? { ...settings, llmProvider: v } : { llmProvider: v }); }}>
               {PROVIDERS.map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </div>
-          <div className="form-group" style={{ marginBottom: 0 }}>
-            <label className="form-label" htmlFor="llm-model">Model</label>
-            <select id="llm-model" className="select" value={settings?.llmModel ?? ""} disabled={loading}
-              onChange={e => onSettingsChange(settings ? { ...settings, llmModel: e.target.value || null } : { llmProvider: "gemini", llmModel: e.target.value || null })}>
-              <option value="">Default Model</option>
-              {MODEL_OPTIONS[settings?.llmProvider ?? "gemini"].map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
             </select>
           </div>
         </div>

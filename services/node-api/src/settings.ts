@@ -6,7 +6,6 @@ export type ScanSchedule = "manual" | "daily" | "weekly";
 
 export interface UserSettings {
   llmProvider: LlmProvider;
-  llmModel: string | null;
   timezone: string;
   promptLoggingEnabled: boolean;
   scanSchedule: ScanSchedule;
@@ -30,7 +29,6 @@ export type UserSettingsPatch = Partial<
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
   llmProvider: "gemini",
-  llmModel: null,
   timezone: "UTC",
   promptLoggingEnabled: false,
   scanSchedule: "manual",

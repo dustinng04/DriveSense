@@ -18,34 +18,24 @@ export const DEFAULT_LLM_PROVIDER: LlmProvider = 'gemini';
 
 export const LLM_MODEL_OPTIONS: Record<LlmProvider, readonly LlmModelOption[]> = {
   gemini: [
-    { provider: 'gemini', id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
     { provider: 'gemini', id: 'gemini-3-flash', label: 'Gemini 3 Flash' },
   ],
   openai: [
-    { provider: 'openai', id: 'gpt-5.4', label: 'GPT-5.4' },
-    { provider: 'openai', id: 'gpt-5.4-pro', label: 'GPT-5.4 Pro' },
-    { provider: 'openai', id: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
-    { provider: 'openai', id: 'gpt-5.4-nano', label: 'GPT-5.4 nano' },
     { provider: 'openai', id: 'gpt-4o-mini', label: 'gpt-4o-mini' },
   ],
   anthropic: [
-    { provider: 'anthropic', id: 'claude-opus-4-6-latest', label: 'Claude Opus 4.6' },
-    { provider: 'anthropic', id: 'claude-sonnet-4-6-latest', label: 'Claude Sonnet 4.6' },
-    { provider: 'anthropic', id: 'claude-haiku-latest', label: 'Claude Haiku' },
+    { provider: 'anthropic', id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
   ],
   glm: [
-    { provider: 'glm', id: 'glm-5', label: 'GLM-5' },
-    { provider: 'glm', id: 'glm-5.1', label: 'GLM-5.1' },
-    { provider: 'glm', id: 'glm-4-plus', label: 'GLM-4.x' },
     { provider: 'glm', id: 'glm-4.7-flash', label: 'GLM-4.7-Flash' },
   ],
 };
 
 export const DEFAULT_LLM_MODELS: Record<LlmProvider, string> = {
-  gemini: LLM_MODEL_OPTIONS.gemini[1].id,
-  openai: LLM_MODEL_OPTIONS.openai[2].id,
-  anthropic: LLM_MODEL_OPTIONS.anthropic[1].id,
-  glm: LLM_MODEL_OPTIONS.glm[3].id,
+  gemini: LLM_MODEL_OPTIONS.gemini[0].id,
+  openai: LLM_MODEL_OPTIONS.openai[0].id,
+  anthropic: LLM_MODEL_OPTIONS.anthropic[0].id,
+  glm: LLM_MODEL_OPTIONS.glm[0].id,
 };
 
 const DEFAULT_BASE_URLS: Record<LlmProvider, string> = {
