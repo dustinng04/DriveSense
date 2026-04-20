@@ -377,3 +377,26 @@ export async function updateNotionPage(params: {
   });
   return response.json();
 }
+
+export async function listNotionBlockChildren(params: {
+  userId: string;
+  accountId: string;
+  blockId: string;
+  pageSize?: number;
+  startCursor?: string;
+}) {
+  const query: Record<string, string | number | undefined> = {
+    page_size: params.pageSize,
+    start_cursor: params.startCursor,
+  };
+
+  const url = new URL(`${NOTION_API_BASE}/blocks/${encodeURIComponent(params.blockId)}/children`);
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined) {
+      url.searchParams.set(key, String(value));
+    }
+  }
+
+  const response = await notionRequest(params.userId, params.accountId, url.toString());
+  return response.json();
+}

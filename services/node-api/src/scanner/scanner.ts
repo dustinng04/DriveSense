@@ -1,7 +1,6 @@
 import type {
   DetectedContext,
   PlatformScanAdapter,
-  ScannedFile,
   ScanOptions,
   ScanResult,
 } from './types.js';
@@ -44,7 +43,12 @@ export class FileScanner {
    *  - The resource is not a folder/page
    *  - The resource ID is not in the whitelist
    */
-  async scan(context: DetectedContext, options: ScanOptions): Promise<ScanResult> {
+  async scan(
+    userId: string,
+    accountId: string,
+    context: DetectedContext,
+    options: ScanOptions,
+  ): Promise<ScanResult> {
     const scannedAt = new Date().toISOString();
     const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
 
@@ -85,7 +89,7 @@ export class FileScanner {
     }
 
     const adapter = this.adapters.get(context.platform)!;
-    const files = await adapter.listFiles(context.resourceId, maxFiles);
+    const files = await adapter.listFiles(userId, accountId, context.resourceId, maxFiles);
 
     return {
       context,

@@ -81,8 +81,10 @@ export interface PlatformScanAdapter {
   platform: Platform;
   /**
    * Fetch lightweight file metadata for the given resource.
+   * @param userId     - DriveSense user ID
+   * @param accountId  - Platform-native account ID (e.g. Google sub, Notion workspace/bot ID)
    * @param resourceId - Drive folder ID, Notion database/page ID, etc.
    * @param maxFiles   - Upper bound on how many items to return
    */
-  listFiles(resourceId: string, maxFiles: number): Promise<ScannedFile[]>;
+  listFiles(userId: string, accountId: string, resourceId: string, maxFiles: number): Promise<ScannedFile[]>;
 }
