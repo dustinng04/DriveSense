@@ -138,7 +138,7 @@ class GeminiAdapter extends FetchLlmAdapter {
       }));
 
     // Log the prompt for debugging (non-blocking)
-    const logEntry = defaultPromptLogger.createEntry(this.provider, model, request.messages, {
+    const logEntry = defaultPromptLogger.createEntry(this.provider, request.messages, {
       responseFormat: request.responseFormat,
       temperature: request.temperature,
       maxOutputTokens: request.maxOutputTokens,

@@ -8,6 +8,9 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0"
+  },
   "devDependencies": {
     "@types/chrome": "^0.0.325",
     "typescript": "~5.7.2",

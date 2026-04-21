@@ -1,17 +1,20 @@
 import { withUserTransaction } from "../db/withUserTransaction.js";
 import type { SuggestionCard } from "./types.js";
 
-export type SuggestionStatus = "pending" | "confirmed" | "skipped" | "dismissed";
+export type SuggestionStatus =
+  | "pending_enrichment"
+  | "pending"
+  | "confirmed"
+  | "skipped"
+  | "dismissed";
 
 export interface StoredSuggestion extends SuggestionCard {
   userId: string;
   platform: "google_drive" | "notion";
   status: SuggestionStatus;
   reason: string | null;
-  dismissedForever: boolean;
   confirmedAt: string | null;
-  skippedAt: string | null;
-  dismissedAt: string | null;
+  analysis?: Record<string, unknown>;
   updatedAt: string;
 }
 
@@ -27,10 +30,8 @@ interface SuggestionRow {
   files: { id: string }[];
   confidence: SuggestionCard["confidence"];
   analysis: Record<string, unknown>;
-  dismissed_forever: boolean;
+  dismissed_count: number;
   confirmed_at: string | null;
-  skipped_at: string | null;
-  dismissed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -47,11 +48,10 @@ function rowToStored(row: SuggestionRow): StoredSuggestion {
     confidence: row.confidence ?? "medium",
     reason: row.reason,
     fileIds: (row.files ?? []).map((f) => f.id),
-    dismissedForever: row.dismissed_forever,
+    dismissedCount: row.dismissed_count,
     confirmedAt: row.confirmed_at,
-    skippedAt: row.skipped_at,
-    dismissedAt: row.dismissed_at,
     generatedAt: row.created_at,
+    analysis: row.analysis ?? undefined,
     updatedAt: row.updated_at,
   };
 }
@@ -59,17 +59,19 @@ function rowToStored(row: SuggestionRow): StoredSuggestion {
 const SELECT_COLS = `
   id, user_id, platform, action, status, title, description, reason,
   files, analysis->>'confidence' as confidence,
-  dismissed_forever, confirmed_at, skipped_at, dismissed_at, created_at, updated_at
+  dismissed_count, confirmed_at, created_at, updated_at
 `;
 
 export interface ReceiveSuggestionInput {
   platform: "google_drive" | "notion";
   action: SuggestionCard["action"];
+  status?: SuggestionStatus;
   title: string;
   description: string;
   confidence: SuggestionCard["confidence"];
   fileIds: string[];
   reason?: string;
+  analysis?: Record<string, unknown>;
 }
 
 export async function storeSuggestion(
@@ -78,16 +80,17 @@ export async function storeSuggestion(
 ): Promise<StoredSuggestion> {
   return withUserTransaction(userId, async (client) => {
     const files = input.fileIds.map((id) => ({ id }));
-    const analysis = { confidence: input.confidence };
+    const analysis = { confidence: input.confidence, ...(input.analysis ?? {}) };
     const result = await client.query<SuggestionRow>(
       `insert into public.suggestions
-        (user_id, platform, action, title, description, reason, files, analysis)
-       values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
+        (user_id, platform, action, status, title, description, reason, files, analysis)
+       values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)
        returning ${SELECT_COLS}`,
       [
         userId,
         input.platform,
         input.action,
+        input.status ?? "pending",
         input.title,
         input.description,
         input.reason ?? null,
@@ -112,7 +115,7 @@ export async function listSuggestions(
 ): Promise<{ suggestions: StoredSuggestion[]; total: number }> {
   const { status, platform, limit = 50, offset = 0 } = query;
 
-  const conditions: string[] = ["user_id = $1", "dismissed_forever = false"];
+  const conditions: string[] = ["user_id = $1", "dismissed_count < 3"];
   const params: unknown[] = [userId];
 
   if (status) {
@@ -164,7 +167,6 @@ export async function getSuggestion(userId: string, id: string): Promise<StoredS
 
 export interface UpdateStatusInput {
   status: SuggestionStatus;
-  dismissedForever?: boolean;
 }
 
 export async function updateSuggestionStatus(
@@ -174,23 +176,109 @@ export async function updateSuggestionStatus(
 ): Promise<StoredSuggestion | null> {
   return withUserTransaction(userId, async (client) => {
     const now = new Date().toISOString();
-    const dismissedForever =
-      input.status === "dismissed" ? (input.dismissedForever ?? false) : false;
 
     const result = await client.query<SuggestionRow>(
       `update public.suggestions
        set
          status = $3,
-         dismissed_forever = case when $3 = 'dismissed' then $4 else false end,
-         confirmed_at = case when $3 = 'confirmed' then $5::timestamptz else null end,
-         skipped_at   = case when $3 = 'skipped' then $5::timestamptz else null end,
-         dismissed_at = case when $3 = 'dismissed' then $5::timestamptz else null end
+         dismissed_count = case when $3 = 'dismissed' then dismissed_count + 1 else dismissed_count end,
+         confirmed_at = case when $3 = 'confirmed' then $4::timestamptz else null end
        where user_id = $1 and id = $2
        returning ${SELECT_COLS}`,
-      [userId, id, input.status, dismissedForever, now],
+      [userId, id, input.status, now],
     );
 
     if (result.rowCount === 0) return null;
     return rowToStored(result.rows[0]);
+  });
+}
+
+export interface ApplySuggestionEnrichmentInput {
+  title?: string;
+  description?: string;
+  reason?: string | null;
+  confidence?: SuggestionCard["confidence"];
+  analysis?: Record<string, unknown>;
+}
+
+export async function applySuggestionEnrichment(
+  userId: string,
+  id: string,
+  input: ApplySuggestionEnrichmentInput,
+): Promise<StoredSuggestion | null> {
+  return withUserTransaction(userId, async (client) => {
+    const result = await client.query<SuggestionRow>(
+      `update public.suggestions
+       set
+         title = coalesce($3, title),
+         description = coalesce($4, description),
+         reason = $5,
+         analysis = analysis || $6::jsonb,
+         status = 'pending'
+       where user_id = $1
+         and id = $2
+         and status = 'pending_enrichment'
+       returning ${SELECT_COLS}`,
+      [
+        userId,
+        id,
+        input.title ?? null,
+        input.description ?? null,
+        input.reason ?? null,
+        JSON.stringify({
+          ...(input.analysis ?? {}),
+          ...(input.confidence ? { confidence: input.confidence } : {}),
+        }),
+      ],
+    );
+
+    if (result.rowCount === 0) return null;
+    return rowToStored(result.rows[0]);
+  });
+}
+
+/**
+ * Check if a suggestion for this file + action has been rejected recently.
+ * Returns true if the suggestion should be skipped due to rejection cooldown.
+ * - dismissed_count = 1 → skip for 7 days
+ * - dismissed_count = 2 → skip for 15 days
+ * - dismissed_count >= 3 → never suggest again (permanent rejection)
+ */
+export async function checkRejectionHistory(
+  userId: string,
+  fileIds: string[],
+  action: string,
+): Promise<boolean> {
+  return withUserTransaction(userId, async (client) => {
+    const result = await client.query<{
+      dismissed_count: number;
+      updated_at: string;
+    }>(
+      `select dismissed_count, updated_at
+       from public.suggestions
+       where user_id = $1
+         and action = $2
+         and files @> $3::jsonb
+         and dismissed_count >= 1
+       order by updated_at desc
+       limit 1`,
+      [userId, action, JSON.stringify(fileIds.map((id) => ({ id })))],
+    );
+
+    if (result.rowCount === 0) return false;
+
+    const row = result.rows[0];
+    const { dismissed_count, updated_at } = row;
+
+    if (dismissed_count >= 3) return true;
+
+    const lastDismissed = new Date(updated_at);
+    const now = new Date();
+    const daysSinceDismissed = (now.getTime() - lastDismissed.getTime()) / (1000 * 60 * 60 * 24);
+
+    if (dismissed_count === 1) return daysSinceDismissed < 7;
+    if (dismissed_count === 2) return daysSinceDismissed < 15;
+
+    return false;
   });
 }

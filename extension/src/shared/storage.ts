@@ -9,6 +9,7 @@ import type { ExtensionStorage, Provider, Suggestion } from './types.js';
 const STORAGE_DEFAULTS: ExtensionStorage = {
   byokKeys: {},
   authToken: '',
+  userId: null,
   pendingSuggestions: [],
   lastShownSuggestionId: null,
   activeContext: null,
@@ -78,6 +79,15 @@ export async function getAuthToken(): Promise<string> {
 
 export async function setAuthToken(token: string): Promise<void> {
   await storageSet({ authToken: token });
+}
+
+export async function getUserId(): Promise<string | null> {
+  const { userId } = await storageGet('userId');
+  return userId;
+}
+
+export async function setUserId(userId: string | null): Promise<void> {
+  await storageSet({ userId });
 }
 
 export async function getPendingSuggestions(): Promise<Suggestion[]> {

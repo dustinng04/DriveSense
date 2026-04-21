@@ -17,6 +17,8 @@ export interface SuggestionCard {
   confidence: 'high' | 'medium' | 'low';
   /** ISO 8601 timestamp when this card was generated */
   generatedAt: string;
+  /** Number of times this suggestion has been dismissed (0, 1, 2, or 3+) */
+  dismissedCount: number;
 }
 
 /**

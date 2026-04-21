@@ -55,6 +55,24 @@ function detectPlatformAccountId(platform: Platform): string | undefined {
       truncated.match(/"oauth2_user_id"\s*:\s*"(\d+)"/);
     return m?.[1];
   }
+
+  if (platform === 'notion') {
+    // Notion workspace ID is typically embedded in page metadata or available via the global object
+    // Try to find it in window.__NOTION_DATA__ or similar injected globals
+    const notion = (window as unknown as Record<string, unknown>).__NOTION_DATA__ as Record<string, unknown> | undefined;
+    if (notion?.spaceId && typeof notion.spaceId === 'string') {
+      return notion.spaceId;
+    }
+
+    // Fallback: extract from localStorage if cached during OAuth
+    try {
+      const cached = localStorage.getItem('notion_workspace_id');
+      if (cached) return cached;
+    } catch {
+      // ignore
+    }
+  }
+
   return undefined;
 }
 

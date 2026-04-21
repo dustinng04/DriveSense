@@ -15,7 +15,7 @@ export interface OAuthAccountSummary {
 }
 export type Provider = 'gemini' | 'openai' | 'anthropic' | 'glm';
 export type SuggestionAction = 'archive' | 'merge' | 'rename' | 'review';
-export type SuggestionStatus = 'pending' | 'confirmed' | 'skipped' | 'dismissed';
+export type SuggestionStatus = 'pending_enrichment' | 'pending' | 'confirmed' | 'skipped' | 'dismissed';
 export type Confidence = 'high' | 'medium' | 'low';
 
 export interface Suggestion {
@@ -28,6 +28,7 @@ export interface Suggestion {
   fileIds: string[];
   platform: Platform;
   reason?: string;
+  analysis?: Record<string, unknown>;
 }
 
 export interface UserSettings {
@@ -131,6 +132,8 @@ export interface ExtensionStorage {
   byokKeys: Partial<Record<Provider, string>>;
   /** Bearer token for the DriveSense Node API */
   authToken: string;
+  /** ID of the authenticated user (from /session/me), used for Realtime subscriptions */
+  userId: string | null;
   /** Cached pending suggestions (refreshed by background worker) */
   pendingSuggestions: Suggestion[];
   /** ID of the last suggestion shown in an overlay, to prevent re-showing */
@@ -153,12 +156,12 @@ export interface ExtensionStorage {
 
 export type BackgroundMessage =
   | {
-      type: 'CONTEXT_DETECTED';
-      platform: Platform;
-      url: string;
-      fileId?: string;
-      accountId?: string;
-    }
+    type: 'CONTEXT_DETECTED';
+    platform: Platform;
+    url: string;
+    fileId?: string;
+    accountId?: string;
+  }
   | { type: 'GET_BYOK_KEY'; provider: Provider }
   | { type: 'GET_PENDING_COUNT' }
   | { type: 'DISMISS_SUGGESTION'; id: string }

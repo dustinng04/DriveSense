@@ -17,6 +17,7 @@ import { rulesRouter } from "./rules/routes.js";
 import { freeCallsRouter } from "./free-calls/routes.js";
 import { googleDriveOAuthRouter, googleDriveRouter } from "./google-drive/routes.js";
 import { notionOAuthRouter, notionRouter } from "./notion/routes.js";
+import { scannerRouter } from "./scanner/routes.js";
 import type { AuthenticatedRequestContext } from "./auth/types.js";
 
 interface AuthenticatedLocals {
@@ -184,6 +185,7 @@ export function createApp() {
   app.use("/llm/free-call", requireAuth, freeCallsRouter);
   app.use("/google-drive", requireAuth, googleDriveRouter);
   app.use("/notion", requireAuth, notionRouter);
+  app.use("/scan", requireAuth, scannerRouter);
 
   return app;
 }

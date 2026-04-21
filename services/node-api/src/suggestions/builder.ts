@@ -53,6 +53,7 @@ function buildCard(request: SuggestionRequest): SuggestionCard {
     fileIds: request.fileIds,
     confidence: request.confidence,
     generatedAt: new Date().toISOString(),
+    dismissedCount: 0,
   };
 }
 

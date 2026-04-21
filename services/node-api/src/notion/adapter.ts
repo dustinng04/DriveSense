@@ -1,5 +1,5 @@
-import { PlatformScanAdapter, ScannedFile } from '../scanner/types.js';
-import { listNotionBlockChildren, queryNotionDatabase } from './service.js';
+import { PlatformScanAdapter, ScannedFile, PlatformContentAdapter } from '../scanner/types.js';
+import { listNotionBlockChildren, queryNotionDatabase, readNotionPageMarkdown } from './service.js';
 
 /**
  * Adapter for Notion platform to bridge between FileScanner and NotionService.
@@ -79,5 +79,25 @@ export class NotionScanAdapter implements PlatformScanAdapter {
       platform: 'notion',
       parentFolderIds: [block.parent?.page_id || block.parent?.database_id].filter(Boolean) as string[],
     };
+  }
+}
+
+/**
+ * Content adapter for Notion to fetch markdown content for similarity analysis.
+ */
+export class NotionContentAdapter implements PlatformContentAdapter {
+  readonly platform = 'notion';
+
+  /**
+   * Fetch markdown content for analysis.
+   * Uses Notion's markdown export endpoint.
+   */
+  async fetchTextContent(
+    userId: string,
+    accountId: string,
+    pageId: string,
+    mimeType: string,
+  ): Promise<string | null> {
+    return readNotionPageMarkdown(userId, accountId, pageId);
   }
 }

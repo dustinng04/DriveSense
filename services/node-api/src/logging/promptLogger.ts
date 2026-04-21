@@ -10,7 +10,6 @@ const __dirname = path.dirname(__filename);
 export interface PromptLogEntry {
   timestamp: string;
   provider: LlmProvider;
-  model: string;
   promptTemplate?: string;
   renderedPrompt: string;
   responseFormat?: 'text' | 'json';
@@ -67,7 +66,6 @@ export class PromptLogger {
       const logLine = JSON.stringify({
         time: date.toISOString(),
         provider: entry.provider,
-        model: entry.model,
         promptTemplate: entry.promptTemplate,
         renderedPrompt: entry.renderedPrompt,
         responseFormat: entry.responseFormat,
@@ -87,7 +85,6 @@ export class PromptLogger {
    */
   createEntry(
     provider: LlmProvider,
-    model: string,
     messages: LlmMessage[],
     options?: {
       promptTemplate?: string;
@@ -99,7 +96,6 @@ export class PromptLogger {
     return {
       timestamp: new Date().toISOString(),
       provider,
-      model,
       promptTemplate: options?.promptTemplate,
       renderedPrompt: formatMessages(messages),
       responseFormat: options?.responseFormat,

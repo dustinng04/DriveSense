@@ -1,6 +1,10 @@
+import path from "path";
+import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 
 dotenv.config({ override: false });
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const port = Number(process.env.NODE_PORT ?? "3001");
 
@@ -60,21 +64,7 @@ function resolveCorsAllowChromeExtension(): boolean {
 }
 
 function resolveDatabaseUrl(): string {
-  if (process.env.DATABASE_URL) {
-    return process.env.DATABASE_URL;
-  }
-
-  const host = process.env.DB_HOST ?? "localhost";
-  const dbPort = Number(process.env.DB_PORT ?? "5432");
-  const user = requireEnv("POSTGRES_USER");
-  const password = requireEnv("POSTGRES_PASSWORD");
-  const database = requireEnv("POSTGRES_DB");
-
-  if (isNaN(dbPort) || dbPort <= 0 || dbPort > 65535) {
-    throw new Error(`Invalid DB_PORT: ${process.env.DB_PORT}. Must be a number between 1 and 65535.`);
-  }
-
-  return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${dbPort}/${database}`;
+  return requireEnv("DATABASE_URL");
 }
 
 export const config = {
@@ -99,5 +89,6 @@ export const config = {
   notionClientSecret: process.env.NOTION_CLIENT_SECRET,
   notionOauthRedirectUri: process.env.NOTION_OAUTH_REDIRECT_URI,
   notionOauthSuccessRedirect: process.env.NOTION_OAUTH_SUCCESS_REDIRECT,
+  migrationsPath: process.env.MIGRATIONS_PATH ?? path.resolve(__dirname, "./db/migrations"),
 };
 

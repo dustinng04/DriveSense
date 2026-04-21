@@ -5,6 +5,7 @@ import {
   listSuggestions,
   getSuggestion,
   updateSuggestionStatus,
+  applySuggestionEnrichment,
   type ReceiveSuggestionInput,
   type SuggestionStatus,
 } from "./repository.js";
@@ -15,7 +16,19 @@ interface AuthenticatedLocals {
 
 const VALID_ACTIONS = ["archive", "merge", "rename", "review"] as const;
 const VALID_CONFIDENCE = ["high", "medium", "low"] as const;
-const VALID_STATUSES: SuggestionStatus[] = ["pending", "confirmed", "skipped", "dismissed"];
+const VALID_STATUSES: SuggestionStatus[] = [
+  "pending_enrichment",
+  "pending",
+  "confirmed",
+  "skipped",
+  "dismissed",
+];
+const VALID_STATUS_UPDATES: Exclude<SuggestionStatus, "pending_enrichment">[] = [
+  "pending",
+  "confirmed",
+  "skipped",
+  "dismissed",
+];
 const VALID_PLATFORMS = ["google_drive", "notion"] as const;
 
 function isValidAction(v: unknown): v is ReceiveSuggestionInput["action"] {
@@ -137,24 +150,17 @@ suggestionsRouter.get(
 suggestionsRouter.patch(
   "/:id/status",
   async (req: Request, res: Response<unknown, AuthenticatedLocals>) => {
-    const { status, dismissedForever } = req.body ?? {};
+    const { status } = req.body ?? {};
 
-    if (!VALID_STATUSES.includes(status)) {
-      return res.status(400).json({ error: "status must be one of: pending, confirmed, skipped, dismissed" });
-    }
-
-    if (dismissedForever !== undefined && typeof dismissedForever !== "boolean") {
-      return res.status(400).json({ error: "dismissedForever must be a boolean when provided" });
-    }
-
-    if (dismissedForever === true && status !== "dismissed") {
-      return res.status(400).json({ error: "dismissedForever can only be true when status is 'dismissed'" });
+    if (!VALID_STATUS_UPDATES.includes(status)) {
+      return res
+        .status(400)
+        .json({ error: "status must be one of: pending, confirmed, skipped, dismissed" });
     }
 
     try {
       const suggestion = await updateSuggestionStatus(res.locals.auth.userId, req.params.id, {
         status,
-        dismissedForever,
       });
       if (!suggestion) {
         return res.status(404).json({ error: "Suggestion not found." });
@@ -163,6 +169,49 @@ suggestionsRouter.patch(
     } catch (error) {
       return res.status(500).json({
         error: "Failed to update suggestion status.",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  },
+);
+
+/** PATCH /suggestions/:id/enrichment — apply extension BYOK enrichment */
+suggestionsRouter.patch(
+  "/:id/enrichment",
+  async (req: Request, res: Response<unknown, AuthenticatedLocals>) => {
+    const { title, description, reason, confidence, analysis } = req.body ?? {};
+
+    if (title !== undefined && (typeof title !== "string" || !title.trim())) {
+      return res.status(400).json({ error: "title must be a non-empty string when provided" });
+    }
+    if (description !== undefined && (typeof description !== "string" || !description.trim())) {
+      return res.status(400).json({ error: "description must be a non-empty string when provided" });
+    }
+    if (reason !== undefined && reason !== null && typeof reason !== "string") {
+      return res.status(400).json({ error: "reason must be a string or null when provided" });
+    }
+    if (confidence !== undefined && !VALID_CONFIDENCE.includes(confidence)) {
+      return res.status(400).json({ error: "confidence must be 'high', 'medium', or 'low' when provided" });
+    }
+    if (analysis !== undefined && (typeof analysis !== "object" || analysis === null || Array.isArray(analysis))) {
+      return res.status(400).json({ error: "analysis must be an object when provided" });
+    }
+
+    try {
+      const suggestion = await applySuggestionEnrichment(res.locals.auth.userId, req.params.id, {
+        title: typeof title === "string" ? title.trim() : undefined,
+        description: typeof description === "string" ? description.trim() : undefined,
+        reason: typeof reason === "string" ? reason.trim() : reason ?? undefined,
+        confidence,
+        analysis: analysis as Record<string, unknown> | undefined,
+      });
+      if (!suggestion) {
+        return res.status(404).json({ error: "Suggestion not found or not eligible for enrichment." });
+      }
+      return res.json({ suggestion });
+    } catch (error) {
+      return res.status(500).json({
+        error: "Failed to apply suggestion enrichment.",
         message: error instanceof Error ? error.message : "Unknown error",
       });
     }

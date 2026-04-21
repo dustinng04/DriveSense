@@ -400,3 +400,18 @@ export async function listNotionBlockChildren(params: {
   const response = await notionRequest(params.userId, params.accountId, url.toString());
   return response.json();
 }
+
+export async function readNotionPageMarkdown(
+  userId: string,
+  accountId: string,
+  pageId: string,
+): Promise<string> {
+  const response = await notionRequest(
+    userId,
+    accountId,
+    `/pages/${encodeURIComponent(pageId)}/markdown`,
+  );
+
+  const data = (await response.json()) as { markdown?: string };
+  return data.markdown ?? '';
+}

@@ -88,3 +88,24 @@ export interface PlatformScanAdapter {
    */
   listFiles(userId: string, accountId: string, resourceId: string, maxFiles: number): Promise<ScannedFile[]>;
 }
+
+/**
+ * Platform adapter for fetching text content for similarity analysis.
+ * Implement one adapter per platform to handle content extraction.
+ */
+export interface PlatformContentAdapter {
+  /** Platform this adapter handles */
+  platform: Platform;
+  
+  /**
+   * Fetch text content for analysis.
+   * Returns markdown/plain text for documents.
+   * Google Sheets are excluded (metadata-only staleness).
+   */
+  fetchTextContent(
+    userId: string,
+    accountId: string,
+    fileId: string,
+    mimeType: string
+  ): Promise<string | null>;
+}

@@ -3,6 +3,7 @@ export {
   detectExactDuplicates,
   detectNearDuplicates,
   detectStaleness,
+  detectMetadataDuplicates,
 } from './analysis.js';
 export type {
   ScannedFile,
@@ -19,4 +20,6 @@ export type {
   StalenessAssessment,
   StalenessOptions,
   OptionalLlmStalenessReasoning,
+  IndexedFileMetadata,
+  MetadataDuplicatePair,
 } from './analysis.js';

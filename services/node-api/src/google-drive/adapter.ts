@@ -1,5 +1,5 @@
-import { PlatformScanAdapter, ScannedFile } from '../scanner/types.js';
-import { listGoogleDriveFiles } from './service.js';
+import { PlatformScanAdapter, ScannedFile, PlatformContentAdapter } from '../scanner/types.js';
+import { listGoogleDriveFiles, readGoogleDriveFileContent } from './service.js';
 
 /**
  * Adapter for Google Drive platform to bridge between FileScanner and GoogleDriveService.
@@ -34,5 +34,32 @@ export class GoogleDriveScanAdapter implements PlatformScanAdapter {
       platform: 'google_drive',
       parentFolderIds: f.parents || [],
     }));
+  }
+}
+
+/**
+ * Content adapter for Google Drive to fetch text content for similarity analysis.
+ */
+export class GoogleDriveContentAdapter implements PlatformContentAdapter {
+  readonly platform = 'google_drive';
+
+  /**
+   * Fetch text content for analysis.
+   * Skips Google Sheets (metadata-only staleness).
+   * Exports Google Docs as plain text, fetches other files as-is.
+   */
+  async fetchTextContent(
+    userId: string,
+    accountId: string,
+    fileId: string,
+    mimeType: string,
+  ): Promise<string | null> {
+    if (mimeType === 'application/vnd.google-apps.spreadsheet') {
+      return null;
+    }
+
+    const result = await readGoogleDriveFileContent(userId, accountId, fileId);
+    const buffer = Buffer.from(result.contentBase64, 'base64');
+    return buffer.toString('utf-8');
   }
 }

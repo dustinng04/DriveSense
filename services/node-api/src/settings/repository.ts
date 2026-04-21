@@ -6,6 +6,7 @@ import {
   type UserSettings,
   type UserSettingsPatch,
 } from "../settings.js";
+import type { LlmProvider } from "../llm/types.js";
 
 interface SettingsRow {
   llm_provider: UserSettings["llmProvider"];
@@ -199,6 +200,41 @@ export async function patchUserSettings(
     );
 
     return rowToUserSettings(updated.rows[0]);
+  });
+}
+
+interface UserByokSettingsRow {
+  llm_provider: UserSettings["llmProvider"];
+  preferences: Record<string, unknown> | null;
+}
+
+/**
+ * Backend-side check of whether the user opted into BYOK mode.
+ * Secrets (API keys) remain browser-local and are never stored here.
+ */
+export async function getUserByokSettings(
+  userId: string,
+): Promise<{ provider: LlmProvider; hasKey: boolean } | null> {
+  return withUserTransaction(userId, async (client) => {
+    const result = await client.query<UserByokSettingsRow>(
+      `select
+        llm_provider,
+        preferences
+       from public.settings
+       where user_id = $1
+       limit 1`,
+      [userId],
+    );
+
+    if (result.rowCount === 0) {
+      return null;
+    }
+
+    const row = result.rows[0];
+    const preferences = row.preferences ?? {};
+    const hasKey = preferences["byokEnabled"] === true;
+
+    return { provider: row.llm_provider, hasKey };
   });
 }
 

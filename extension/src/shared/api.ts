@@ -98,6 +98,23 @@ export async function updateSuggestionStatus(
   });
 }
 
+export async function patchSuggestionEnrichment(
+  id: string,
+  input: {
+    title?: string;
+    description?: string;
+    reason?: string | null;
+    confidence?: 'high' | 'medium' | 'low';
+    analysis?: Record<string, unknown>;
+  },
+): Promise<Suggestion> {
+  const data = await request<{ suggestion: Suggestion }>(`/suggestions/${id}/enrichment`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+  return data.suggestion;
+}
+
 export async function fetchSettings(): Promise<UserSettings> {
   const data = await request<{ settings: UserSettings }>('/settings');
   return data.settings;
@@ -123,7 +140,10 @@ export async function fetchSessionMe(): Promise<{
     oauthAccounts: OAuthAccountSummary[];
   }>('/session/me');
 
-  await storageSet({ oauthAccountSummaries: data.oauthAccounts ?? [] });
+  await storageSet({ 
+    oauthAccountSummaries: data.oauthAccounts ?? [],
+    userId: data.userId 
+  });
 
   return {
     userId: data.userId,
@@ -165,4 +185,22 @@ export function isContextLinked(
   const resolved = resolveAccountIdForPlatform(platform, oauthAccounts, opts.accountId);
   if (!resolved) return false;
   return oauthAccounts.some((c) => c.provider === platform && c.accountId === resolved);
+}
+
+export interface CrossFolderScanPayload {
+  platform: Platform;
+  accountId: string;
+  candidates: Array<{ id: string; name: string; mimeType: string; sizeBytes?: number; parentFolderIds: string[] }>;
+  universe: Array<{ id: string; name: string; mimeType: string; sizeBytes?: number; parentFolderIds: string[] }>;
+  llm?: {
+    provider?: string;
+    hasByokKey?: boolean;
+  };
+}
+
+export async function postCrossFolderScan(payload: CrossFolderScanPayload): Promise<{ status: string; candidatesCount: number; universeCount: number }> {
+  return request('/scan/cross-folder', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }

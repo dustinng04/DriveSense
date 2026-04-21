@@ -6,7 +6,7 @@ create extension if not exists pgcrypto;
 do $$
 begin
   if not exists (select 1 from pg_type where typname = 'suggestion_status') then
-    create type public.suggestion_status as enum ('pending', 'confirmed', 'skipped', 'dismissed');
+    create type public.suggestion_status as enum ('pending_enrichment', 'pending', 'confirmed', 'skipped', 'dismissed');
   end if;
 end
 $$;
@@ -22,10 +22,8 @@ create table if not exists public.suggestions (
   reason text,
   files jsonb not null default '[]'::jsonb,
   analysis jsonb not null default '{}'::jsonb,
-  dismissed_forever boolean not null default false,
+  dismissed_count integer not null default 0,
   confirmed_at timestamptz,
-  skipped_at timestamptz,
-  dismissed_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -64,6 +62,9 @@ create index if not exists suggestions_user_status_created_idx
   on public.suggestions (user_id, status, created_at desc);
 create index if not exists suggestions_user_action_created_idx
   on public.suggestions (user_id, action, created_at desc);
+create index if not exists suggestions_user_rejection_lookup_idx
+  on public.suggestions (user_id, action, dismissed_count)
+  where dismissed_count >= 1;
 create index if not exists undo_history_user_executed_idx
   on public.undo_history (user_id, executed_at desc);
 

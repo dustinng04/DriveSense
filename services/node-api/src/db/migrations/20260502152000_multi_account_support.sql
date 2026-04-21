@@ -28,4 +28,3 @@ add primary key (user_id, provider, account_id);
 
 -- 6. Update comments for clarity
 comment on column public.oauth_connections.account_id is 'The remote unique ID of the account (e.g. Google sub or Notion workspace ID)';
-comment on column public.oauth_connections.account_email is 'The email associated with the remote account for context-aware matching in the extension';
