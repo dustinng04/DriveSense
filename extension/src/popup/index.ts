@@ -12,6 +12,7 @@ import {
   getAuthToken,
   getByokKey,
   getPendingSuggestions,
+  setAuthToken,
   setByokKey,
   storageGet,
 } from '../shared/storage.js';
@@ -36,6 +37,38 @@ function setFooterStatus(message: string, type: 'default' | 'success' | 'error' 
   const footer = el('footerStatus');
   footer.textContent = message;
   footer.className = type === 'success' ? 'success' : type === 'error' ? 'error' : '';
+}
+
+function readTokenFromUrl(urlString: string): string | null {
+  try {
+    const url = new URL(urlString);
+    const token = url.searchParams.get('token');
+    return token?.trim() ? token.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function launchLoginFlow(provider: 'google-drive' | 'notion'): Promise<void> {
+  const { API_URL } = await import('../shared/buildConfig.js');
+  const redirectUri = chrome.identity.getRedirectURL(`drivesense-${provider}`);
+  const startUrl = `${API_URL}/oauth/${provider}/login/start?redirect_uri=${encodeURIComponent(redirectUri)}`;
+
+  const finalUrl = await chrome.identity.launchWebAuthFlow({
+    url: startUrl,
+    interactive: true,
+  });
+
+  if (!finalUrl) {
+    throw new Error('OAuth flow did not return a redirect URL.');
+  }
+
+  const token = readTokenFromUrl(finalUrl);
+  if (!token) {
+    throw new Error('OAuth did not return a token.');
+  }
+
+  await setAuthToken(token);
 }
 
 // ─── Connectivity & Status ───────────────────────────────────────────────────
@@ -98,16 +131,26 @@ async function refreshStatus(): Promise<void> {
 
     if (googleBtn) {
       googleBtn.onclick = () => {
-        import('../shared/buildConfig.js').then(({ API_URL }) => {
-          void chrome.tabs.create({ url: `${API_URL}/oauth/google-drive/login/start` });
-        });
+        setFooterStatus('Opening Google sign-in…');
+        void launchLoginFlow('google-drive')
+          .then(() => refreshStatus())
+          .then(() => setFooterStatus('Signed in', 'success'))
+          .catch((err) => {
+            console.error('Google login failed', err);
+            setFooterStatus(err instanceof Error ? err.message : 'Google login failed', 'error');
+          });
       };
     }
     if (notionBtn) {
       notionBtn.onclick = () => {
-        import('../shared/buildConfig.js').then(({ API_URL }) => {
-          void chrome.tabs.create({ url: `${API_URL}/oauth/notion/login/start` });
-        });
+        setFooterStatus('Opening Notion sign-in…');
+        void launchLoginFlow('notion')
+          .then(() => refreshStatus())
+          .then(() => setFooterStatus('Signed in', 'success'))
+          .catch((err) => {
+            console.error('Notion login failed', err);
+            setFooterStatus(err instanceof Error ? err.message : 'Notion login failed', 'error');
+          });
       };
     }
 

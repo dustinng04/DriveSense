@@ -86,14 +86,14 @@ async function parseGoogleError(response: Response): Promise<string> {
   return `${response.status} ${response.statusText}`.trim();
 }
 
-async function exchangeCodeForTokens(code: string): Promise<GoogleTokenResponse> {
+async function exchangeCodeForTokens(code: string, redirectUri: string): Promise<GoogleTokenResponse> {
   assertGoogleOauthConfigured();
 
   const body = new URLSearchParams({
     code,
     client_id: config.googleDriveClientId!,
     client_secret: config.googleDriveClientSecret!,
-    redirect_uri: config.googleDriveOauthRedirectUri!,
+    redirect_uri: redirectUri,
     grant_type: "authorization_code",
   });
 
@@ -312,28 +312,49 @@ export async function getGoogleDriveLoginUrl(): Promise<string> {
   return url.toString();
 }
 
+export async function getGoogleDriveLoginUrlWithRedirect(redirectUri: string): Promise<string> {
+  assertGoogleOauthConfigured();
+
+  const { createLoginState } = await import("../integrations/oauthState.js");
+  const state = await createLoginState("google-drive-login", { redirectUri });
+  const url = new URL(GOOGLE_OAUTH_BASE);
+  url.searchParams.set("client_id", config.googleDriveClientId!);
+  url.searchParams.set("redirect_uri", config.googleDriveOauthRedirectUri!);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", DRIVE_SCOPE + " email profile");
+  url.searchParams.set("access_type", "offline");
+  url.searchParams.set("prompt", "consent");
+  url.searchParams.set("include_granted_scopes", "true");
+  url.searchParams.set("state", state);
+
+  return url.toString();
+}
+
 export async function handleGoogleDriveOAuthCallback(params: { code: string; state: string }) {
   const userId = await verifyGoogleDriveOauthState(params.state);
-  const tokens = await exchangeCodeForTokens(params.code);
+  const tokens = await exchangeCodeForTokens(params.code, config.googleDriveOauthRedirectUri!);
   const id = await fetchGoogleUserId(tokens.access_token);
 
   await upsertGoogleDriveConnection(userId, buildGoogleDriveWrite(tokens, null, id));
   return userId;
 }
 
-export async function handleGoogleDriveLoginCallback(params: { code: string; state: string }): Promise<string> {
+export async function handleGoogleDriveLoginCallback(params: {
+  code: string;
+  state: string;
+}): Promise<{ userId: string; redirectUri?: string }> {
   const { verifyLoginState } = await import("../integrations/oauthState.js");
   const { getOrCreateAuthUser } = await import("../auth/admin.js");
 
-  await verifyLoginState(params.state, "google-drive-login");
-  const tokens = await exchangeCodeForTokens(params.code);
+  const { redirectUri } = await verifyLoginState(params.state, "google-drive-login");
+  const tokens = await exchangeCodeForTokens(params.code, config.googleDriveOauthRedirectUri!);
 
   const { id, email } = await fetchGoogleLoginIdentity(tokens.access_token);
 
   const userId = await getOrCreateAuthUser(email);
   await upsertGoogleDriveConnection(userId, buildGoogleDriveWrite(tokens, null, id));
 
-  return userId;
+  return { userId, redirectUri };
 }
 
 export async function getGoogleDriveConnectionStatus(userId: string) {

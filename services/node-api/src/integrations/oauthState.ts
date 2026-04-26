@@ -7,6 +7,7 @@ const encoder = new TextEncoder();
 interface OAuthStatePayload {
   purpose: string;
   sub?: string;
+  redirectUri?: string;
 }
 
 export async function createOauthState(userId: string, purpose: string): Promise<string> {
@@ -34,20 +35,24 @@ export async function verifyOauthState(state: string, expectedPurpose: string): 
   }
 }
 
-export async function createLoginState(purpose: string): Promise<string> {
-  return new SignJWT({ purpose })
+export async function createLoginState(purpose: string, options?: { redirectUri?: string }): Promise<string> {
+  return new SignJWT({ purpose, redirectUri: options?.redirectUri })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime("10m")
     .sign(encoder.encode(config.supabaseJwtSecret));
 }
 
-export async function verifyLoginState(state: string, expectedPurpose: string): Promise<void> {
+export async function verifyLoginState(
+  state: string,
+  expectedPurpose: string,
+): Promise<{ redirectUri?: string }> {
   try {
     const verification = await jwtVerify<OAuthStatePayload>(state, encoder.encode(config.supabaseJwtSecret));
     if (verification.payload.purpose !== expectedPurpose) {
       throw new IntegrationError(`Invalid OAuth login state for purpose: ${expectedPurpose}.`, 400);
     }
+    return { redirectUri: verification.payload.redirectUri };
   } catch (error) {
     if (error instanceof IntegrationError) {
       throw error;

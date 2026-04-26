@@ -14,6 +14,7 @@ import {
   trashGoogleDriveFile,
 } from "./service.js";
 import { config } from "../config.js";
+import { IntegrationError } from "../integrations/errors.js";
 import { maybeRedirectAfterOAuth, parsePageSize, sendErrorResponse } from "../integrations/routesUtils.js";
 
 interface AuthenticatedLocals {
@@ -23,6 +24,12 @@ interface AuthenticatedLocals {
 
 export const googleDriveRouter = Router();
 export const googleDriveOAuthRouter = Router();
+
+function appendQueryParam(baseUrl: string, key: string, value: string): string {
+  const url = new URL(baseUrl);
+  url.searchParams.set(key, value);
+  return url.toString();
+}
 
 googleDriveOAuthRouter.get("/callback", async (req: Request, res: Response) => {
   const error = typeof req.query.error === "string" ? req.query.error : undefined;
@@ -48,18 +55,38 @@ googleDriveOAuthRouter.get("/callback", async (req: Request, res: Response) => {
   }
 
   try {
-    const userId = await handleGoogleDriveOAuthCallback({ code, state });
-    const redirect = maybeRedirectAfterOAuth(
-      res,
-      config.googleDriveOauthSuccessRedirect,
-      "googleDriveConnected",
-      { ok: true },
-    );
-    if (redirect) {
-      return redirect;
-    }
+    try {
+      const userId = await handleGoogleDriveOAuthCallback({ code, state });
+      const redirect = maybeRedirectAfterOAuth(
+        res,
+        config.googleDriveOauthSuccessRedirect,
+        "googleDriveConnected",
+        { ok: true },
+      );
+      if (redirect) {
+        return redirect;
+      }
 
-    return res.json({ connected: true, userId });
+      return res.json({ connected: true, userId });
+    } catch (oauthError) {
+      // If this isn't a "link account" state, fall back to the login flow.
+      if (oauthError instanceof IntegrationError && oauthError.statusCode === 400) {
+        const { handleGoogleDriveLoginCallback } = await import("./service.js");
+        const { generateAccessTokenWithLinkedAccounts } = await import("../auth/accessTokenWithOAuth.js");
+
+        const { userId, redirectUri } = await handleGoogleDriveLoginCallback({ code, state });
+        const token = await generateAccessTokenWithLinkedAccounts(userId);
+
+        if (redirectUri) {
+          return res.redirect(appendQueryParam(redirectUri, "token", token));
+        }
+
+        const dashboardUrl = config.corsAllowedOrigins[0] || "http://localhost:5173";
+        return res.redirect(`${dashboardUrl}/oauth-success?token=${encodeURIComponent(token)}`);
+      }
+
+      throw oauthError;
+    }
   } catch (callbackError) {
     const message =
       callbackError instanceof Error ? callbackError.message : "Google Drive OAuth callback failed.";
@@ -80,10 +107,11 @@ googleDriveOAuthRouter.get("/callback", async (req: Request, res: Response) => {
   }
 });
 
-googleDriveOAuthRouter.get("/login/start", async (_req: Request, res: Response) => {
+googleDriveOAuthRouter.get("/login/start", async (req: Request, res: Response) => {
   try {
-    const { getGoogleDriveLoginUrl } = await import("./service.js");
-    const authUrl = await getGoogleDriveLoginUrl();
+    const redirectUri = typeof req.query.redirect_uri === "string" ? req.query.redirect_uri : undefined;
+    const { getGoogleDriveLoginUrl, getGoogleDriveLoginUrlWithRedirect } = await import("./service.js");
+    const authUrl = redirectUri ? await getGoogleDriveLoginUrlWithRedirect(redirectUri) : await getGoogleDriveLoginUrl();
     return res.redirect(authUrl);
   } catch (error) {
     return sendErrorResponse(res, "Failed to create Google Drive Login URL.", error);
@@ -105,10 +133,13 @@ googleDriveOAuthRouter.get("/login/callback", async (req: Request, res: Response
     const { handleGoogleDriveLoginCallback } = await import("./service.js");
     const { generateAccessTokenWithLinkedAccounts } = await import("../auth/accessTokenWithOAuth.js");
 
-    const userId = await handleGoogleDriveLoginCallback({ code, state });
+    const { userId, redirectUri } = await handleGoogleDriveLoginCallback({ code, state });
     const token = await generateAccessTokenWithLinkedAccounts(userId);
 
-    // Redirect to the success page with the token
+    if (redirectUri) {
+      return res.redirect(appendQueryParam(redirectUri, "token", token));
+    }
+
     return res.redirect(`${dashboardUrl}/oauth-success?token=${encodeURIComponent(token)}`);
   } catch (err) {
     console.error("Google Drive login failed", err);

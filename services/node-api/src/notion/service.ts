@@ -99,7 +99,7 @@ async function parseNotionError(response: Response): Promise<string> {
   return `${response.status} ${response.statusText}`.trim();
 }
 
-async function exchangeCodeForTokens(code: string): Promise<NotionTokenResponse> {
+async function exchangeCodeForTokens(code: string, redirectUri: string): Promise<NotionTokenResponse> {
   assertNotionOauthConfigured();
 
   const response = await fetch(NOTION_OAUTH_TOKEN_URL, {
@@ -111,7 +111,7 @@ async function exchangeCodeForTokens(code: string): Promise<NotionTokenResponse>
     body: JSON.stringify({
       grant_type: "authorization_code",
       code,
-      redirect_uri: config.notionOauthRedirectUri,
+      redirect_uri: redirectUri,
     }),
   });
 
@@ -255,9 +255,24 @@ export async function getNotionLoginUrl(): Promise<string> {
   return url.toString();
 }
 
+export async function getNotionLoginUrlWithRedirect(redirectUri: string): Promise<string> {
+  assertNotionOauthConfigured();
+
+  const { createLoginState } = await import("../integrations/oauthState.js");
+  const state = await createLoginState("notion-login", { redirectUri });
+  const url = new URL(NOTION_OAUTH_BASE);
+  url.searchParams.set("client_id", config.notionClientId!);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("owner", "user");
+  url.searchParams.set("redirect_uri", config.notionOauthRedirectUri!);
+  url.searchParams.set("state", state);
+
+  return url.toString();
+}
+
 export async function handleNotionOAuthCallback(params: { code: string; state: string }) {
   const userId = await verifyNotionOauthState(params.state);
-  const tokens = await exchangeCodeForTokens(params.code);
+  const tokens = await exchangeCodeForTokens(params.code, config.notionOauthRedirectUri!);
 
   if (!tokens.workspace_id?.trim()) {
     throw new Error("Notion OAuth did not return workspace_id.");
@@ -267,12 +282,15 @@ export async function handleNotionOAuthCallback(params: { code: string; state: s
   return userId;
 }
 
-export async function handleNotionLoginCallback(params: { code: string; state: string }): Promise<string> {
+export async function handleNotionLoginCallback(params: {
+  code: string;
+  state: string;
+}): Promise<{ userId: string; redirectUri?: string }> {
   const { verifyLoginState } = await import("../integrations/oauthState.js");
   const { getOrCreateAuthUser } = await import("../auth/admin.js");
 
-  await verifyLoginState(params.state, "notion-login");
-  const tokens = await exchangeCodeForTokens(params.code);
+  const { redirectUri } = await verifyLoginState(params.state, "notion-login");
+  const tokens = await exchangeCodeForTokens(params.code, config.notionOauthRedirectUri!);
 
   if (!tokens.workspace_id?.trim()) {
     throw new Error("Notion OAuth did not return workspace_id.");
@@ -281,7 +299,7 @@ export async function handleNotionLoginCallback(params: { code: string; state: s
   const workspaceIdTrimmed = tokens.workspace_id.trim();
   const userId = await getOrCreateAuthUser(notionAuthSyntheticEmail(workspaceIdTrimmed));
   await upsertNotionConnection(userId, buildNotionWrite(tokens, null, workspaceIdTrimmed));
-  return userId;
+  return { userId, redirectUri };
 }
 
 export async function getNotionConnectionStatus(userId: string) {

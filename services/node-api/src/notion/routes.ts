@@ -12,6 +12,7 @@ import {
   readNotionPage,
   updateNotionPage,
 } from "./service.js";
+import { IntegrationError } from "../integrations/errors.js";
 import { maybeRedirectAfterOAuth, parsePageSize, sendErrorResponse } from "../integrations/routesUtils.js";
 
 interface AuthenticatedLocals {
@@ -21,6 +22,12 @@ interface AuthenticatedLocals {
 
 export const notionRouter = Router();
 export const notionOAuthRouter = Router();
+
+function appendQueryParam(baseUrl: string, key: string, value: string): string {
+  const url = new URL(baseUrl);
+  url.searchParams.set(key, value);
+  return url.toString();
+}
 
 notionOAuthRouter.get("/callback", async (req: Request, res: Response) => {
   const error = typeof req.query.error === "string" ? req.query.error : undefined;
@@ -44,15 +51,35 @@ notionOAuthRouter.get("/callback", async (req: Request, res: Response) => {
   }
 
   try {
-    const userId = await handleNotionOAuthCallback({ code, state });
-    const redirect = maybeRedirectAfterOAuth(res, config.notionOauthSuccessRedirect, "notionConnected", {
-      ok: true,
-    });
-    if (redirect) {
-      return redirect;
-    }
+    try {
+      const userId = await handleNotionOAuthCallback({ code, state });
+      const redirect = maybeRedirectAfterOAuth(res, config.notionOauthSuccessRedirect, "notionConnected", {
+        ok: true,
+      });
+      if (redirect) {
+        return redirect;
+      }
 
-    return res.json({ connected: true, userId });
+      return res.json({ connected: true, userId });
+    } catch (oauthError) {
+      // If this isn't a "link account" state, fall back to the login flow.
+      if (oauthError instanceof IntegrationError && oauthError.statusCode === 400) {
+        const { handleNotionLoginCallback } = await import("./service.js");
+        const { generateAccessTokenWithLinkedAccounts } = await import("../auth/accessTokenWithOAuth.js");
+
+        const { userId, redirectUri } = await handleNotionLoginCallback({ code, state });
+        const token = await generateAccessTokenWithLinkedAccounts(userId);
+
+        if (redirectUri) {
+          return res.redirect(appendQueryParam(redirectUri, "token", token));
+        }
+
+        const dashboardUrl = config.corsAllowedOrigins[0] || "http://localhost:5173";
+        return res.redirect(`${dashboardUrl}/oauth-success?token=${encodeURIComponent(token)}`);
+      }
+
+      throw oauthError;
+    }
   } catch (callbackError) {
     const message = callbackError instanceof Error ? callbackError.message : "Notion OAuth callback failed.";
     const redirect = maybeRedirectAfterOAuth(res, config.notionOauthSuccessRedirect, "notionConnected", {
@@ -70,10 +97,11 @@ notionOAuthRouter.get("/callback", async (req: Request, res: Response) => {
   }
 });
 
-notionOAuthRouter.get("/login/start", async (_req: Request, res: Response) => {
+notionOAuthRouter.get("/login/start", async (req: Request, res: Response) => {
   try {
-    const { getNotionLoginUrl } = await import("./service.js");
-    const authUrl = await getNotionLoginUrl();
+    const redirectUri = typeof req.query.redirect_uri === "string" ? req.query.redirect_uri : undefined;
+    const { getNotionLoginUrl, getNotionLoginUrlWithRedirect } = await import("./service.js");
+    const authUrl = redirectUri ? await getNotionLoginUrlWithRedirect(redirectUri) : await getNotionLoginUrl();
     // Redirect directly to the Notion OAuth screen
     return res.redirect(authUrl);
   } catch (error) {
@@ -96,10 +124,13 @@ notionOAuthRouter.get("/login/callback", async (req: Request, res: Response) => 
     const { handleNotionLoginCallback } = await import("./service.js");
     const { generateAccessTokenWithLinkedAccounts } = await import("../auth/accessTokenWithOAuth.js");
 
-    const userId = await handleNotionLoginCallback({ code, state });
+    const { userId, redirectUri } = await handleNotionLoginCallback({ code, state });
     const token = await generateAccessTokenWithLinkedAccounts(userId);
 
-    // Redirect to the success page with the token
+    if (redirectUri) {
+      return res.redirect(appendQueryParam(redirectUri, "token", token));
+    }
+
     return res.redirect(`${dashboardUrl}/oauth-success?token=${encodeURIComponent(token)}`);
   } catch (err) {
     console.error("Notion login failed", err);
