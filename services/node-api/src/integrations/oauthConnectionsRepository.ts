@@ -4,6 +4,7 @@ interface OAuthConnectionRow {
   user_id: string;
   provider: OAuthProvider;
   account_id: string;
+  account_email: string | null;
   is_primary: boolean;
   access_token: string;
   refresh_token: string | null;
@@ -20,6 +21,7 @@ export interface OAuthConnection {
   userId: string;
   provider: OAuthProvider;
   accountId: string;
+  accountEmail: string | null;
   isPrimary: boolean;
   accessToken: string;
   refreshToken: string | null;
@@ -37,6 +39,7 @@ export interface OAuthTokenWriteInput {
   tokenType: string | null;
   expiryDate: string | null;
   accountId: string;
+  accountEmail?: string | null;
   /** When omitted, first connection for this provider becomes primary; otherwise false unless set */
   isPrimary?: boolean;
 }
@@ -44,6 +47,7 @@ export interface OAuthTokenWriteInput {
 export interface OAuthAccountSummary {
   provider: OAuthProvider;
   accountId: string;
+  accountEmail: string | null;
   isPrimary: boolean;
 }
 
@@ -57,6 +61,7 @@ function rowToConnection(row: OAuthConnectionRow): OAuthConnection {
     userId: row.user_id,
     provider: row.provider,
     accountId: row.account_id,
+    accountEmail: row.account_email,
     isPrimary: row.is_primary,
     accessToken: row.access_token,
     refreshToken: row.refresh_token,
@@ -79,6 +84,7 @@ export async function getOAuthConnection(
         user_id,
         provider,
         account_id,
+        account_email,
         is_primary,
         access_token,
         refresh_token,
@@ -114,6 +120,23 @@ async function countConnectionsForProvider(
   });
 }
 
+/** Finds a DriveSense userId by a platform-specific account ID. Used for login lookup. */
+export async function findUserIdByPlatformAccount(
+  provider: OAuthProvider,
+  accountId: string,
+): Promise<string | null> {
+  // Use a null userId for the transaction since we don't have one yet.
+  return withUserTransaction(null, async (client) => {
+    const result = await client.query<{ user_id: string }>(
+      `select user_id from public.oauth_connections
+       where provider = $1 and account_id = $2
+       limit 1`,
+      [provider, accountId],
+    );
+    return result.rows[0]?.user_id ?? null;
+  });
+}
+
 export async function upsertOAuthConnection(
   userId: string,
   provider: OAuthProvider,
@@ -129,6 +152,7 @@ export async function upsertOAuthConnection(
         user_id,
         provider,
         account_id,
+        account_email,
         is_primary,
         access_token,
         refresh_token,
@@ -136,18 +160,20 @@ export async function upsertOAuthConnection(
         token_type,
         expiry_date
       )
-      values ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz)
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz)
       on conflict (user_id, provider, account_id) do update
       set
         access_token = excluded.access_token,
         refresh_token = excluded.refresh_token,
         token_scope = excluded.token_scope,
         token_type = excluded.token_type,
-        expiry_date = excluded.expiry_date
+        expiry_date = excluded.expiry_date,
+        account_email = coalesce(excluded.account_email, oauth_connections.account_email)
       returning
         user_id,
         provider,
         account_id,
+        account_email,
         is_primary,
         access_token,
         refresh_token,
@@ -160,6 +186,7 @@ export async function upsertOAuthConnection(
         userId,
         provider,
         input.accountId,
+        input.accountEmail ?? null,
         isPrimary,
         input.accessToken,
         input.refreshToken,
@@ -195,13 +222,14 @@ export async function listOAuthAccountSummaries(
     const result = await client.query<{
       provider: OAuthProvider;
       account_id: string;
+      account_email: string | null;
       is_primary: boolean;
     }>(
       provider
-        ? `select provider, account_id, is_primary from public.oauth_connections
+        ? `select provider, account_id, account_email, is_primary from public.oauth_connections
            where user_id = $1 and provider = $2
            order by is_primary desc, updated_at desc`
-        : `select provider, account_id, is_primary from public.oauth_connections
+        : `select provider, account_id, account_email, is_primary from public.oauth_connections
            where user_id = $1
            order by provider, is_primary desc, updated_at desc`,
       provider ? [userId, provider] : [userId],
@@ -209,6 +237,7 @@ export async function listOAuthAccountSummaries(
     return result.rows.map((row) => ({
       provider: row.provider,
       accountId: row.account_id,
+      accountEmail: row.account_email,
       isPrimary: row.is_primary,
     }));
   });

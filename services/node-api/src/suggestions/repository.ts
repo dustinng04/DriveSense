@@ -11,6 +11,7 @@ export type SuggestionStatus =
 export interface StoredSuggestion extends SuggestionCard {
   userId: string;
   platform: "google_drive" | "notion";
+  accountId: string | null;
   status: SuggestionStatus;
   reason: string | null;
   confirmedAt: string | null;
@@ -22,6 +23,7 @@ interface SuggestionRow {
   id: string;
   user_id: string;
   platform: "google_drive" | "notion";
+  account_id: string | null;
   action: SuggestionCard["action"];
   status: SuggestionStatus;
   title: string;
@@ -41,6 +43,7 @@ function rowToStored(row: SuggestionRow): StoredSuggestion {
     id: row.id,
     userId: row.user_id,
     platform: row.platform,
+    accountId: row.account_id,
     action: row.action,
     status: row.status,
     title: row.title,
@@ -57,13 +60,14 @@ function rowToStored(row: SuggestionRow): StoredSuggestion {
 }
 
 const SELECT_COLS = `
-  id, user_id, platform, action, status, title, description, reason,
+  id, user_id, platform, account_id, action, status, title, description, reason,
   files, analysis->>'confidence' as confidence,
   dismissed_count, confirmed_at, created_at, updated_at
 `;
 
 export interface ReceiveSuggestionInput {
   platform: "google_drive" | "notion";
+  accountId?: string;
   action: SuggestionCard["action"];
   status?: SuggestionStatus;
   title: string;
@@ -83,12 +87,13 @@ export async function storeSuggestion(
     const analysis = { confidence: input.confidence, ...(input.analysis ?? {}) };
     const result = await client.query<SuggestionRow>(
       `insert into public.suggestions
-        (user_id, platform, action, status, title, description, reason, files, analysis)
-       values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)
+        (user_id, platform, account_id, action, status, title, description, reason, files, analysis)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb)
        returning ${SELECT_COLS}`,
       [
         userId,
         input.platform,
+        input.accountId ?? null,
         input.action,
         input.status ?? "pending",
         input.title,

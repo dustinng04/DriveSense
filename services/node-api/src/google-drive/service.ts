@@ -333,9 +333,12 @@ export async function getGoogleDriveLoginUrlWithRedirect(redirectUri: string): P
 export async function handleGoogleDriveOAuthCallback(params: { code: string; state: string }) {
   const userId = await verifyGoogleDriveOauthState(params.state);
   const tokens = await exchangeCodeForTokens(params.code, config.googleDriveOauthRedirectUri!);
-  const id = await fetchGoogleUserId(tokens.access_token);
+  const { id, email } = await fetchGoogleLoginIdentity(tokens.access_token);
 
-  await upsertGoogleDriveConnection(userId, buildGoogleDriveWrite(tokens, null, id));
+  await upsertGoogleDriveConnection(userId, {
+    ...buildGoogleDriveWrite(tokens, null, id),
+    accountEmail: email,
+  });
   return userId;
 }
 
@@ -345,14 +348,26 @@ export async function handleGoogleDriveLoginCallback(params: {
 }): Promise<{ userId: string; redirectUri?: string }> {
   const { verifyLoginState } = await import("../integrations/oauthState.js");
   const { getOrCreateAuthUser } = await import("../auth/admin.js");
+  const { findUserIdByPlatformAccount } = await import("../integrations/oauthConnectionsRepository.js");
 
   const { redirectUri } = await verifyLoginState(params.state, "google-drive-login");
   const tokens = await exchangeCodeForTokens(params.code, config.googleDriveOauthRedirectUri!);
 
   const { id, email } = await fetchGoogleLoginIdentity(tokens.access_token);
 
-  const userId = await getOrCreateAuthUser(email);
-  await upsertGoogleDriveConnection(userId, buildGoogleDriveWrite(tokens, null, id));
+  // 1. Prioritize lookup by platform account ID (google sub)
+  let userId = await findUserIdByPlatformAccount("google_drive", id);
+
+  // 2. Fallback to baseline email creation if no connection exists
+  if (!userId) {
+    userId = await getOrCreateAuthUser(email);
+  }
+
+  // 3. Link/Update the connection
+  await upsertGoogleDriveConnection(userId, {
+    ...buildGoogleDriveWrite(tokens, null, id),
+    accountEmail: email,
+  });
 
   return { userId, redirectUri };
 }

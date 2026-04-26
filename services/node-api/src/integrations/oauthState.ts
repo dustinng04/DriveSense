@@ -28,7 +28,7 @@ export async function verifyOauthState(state: string, expectedPurpose: string): 
 
     return verification.payload.sub;
   } catch (error) {
-    if (error instanceof IntegrationError) {
+    if (error instanceof Error && (error.name === "IntegrationError" || (error as any).statusCode === 400)) {
       throw error;
     }
     throw new IntegrationError("OAuth state is invalid or expired.", 400);
@@ -54,7 +54,7 @@ export async function verifyLoginState(
     }
     return { redirectUri: verification.payload.redirectUri };
   } catch (error) {
-    if (error instanceof IntegrationError) {
+    if (error instanceof Error && (error.name === "IntegrationError" || (error as any).statusCode === 400)) {
       throw error;
     }
     throw new IntegrationError("OAuth login state is invalid or expired.", 400);

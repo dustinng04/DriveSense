@@ -278,7 +278,10 @@ export async function handleNotionOAuthCallback(params: { code: string; state: s
     throw new Error("Notion OAuth did not return workspace_id.");
   }
 
-  await upsertNotionConnection(userId, buildNotionWrite(tokens, null, tokens.workspace_id.trim()));
+  await upsertNotionConnection(userId, {
+    ...buildNotionWrite(tokens, null, tokens.workspace_id.trim()),
+    accountEmail: null,
+  });
   return userId;
 }
 

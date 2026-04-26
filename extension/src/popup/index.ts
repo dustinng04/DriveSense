@@ -58,7 +58,6 @@ async function launchLoginFlow(provider: 'google-drive' | 'notion'): Promise<voi
     url: startUrl,
     interactive: true,
   });
-
   if (!finalUrl) {
     throw new Error('OAuth flow did not return a redirect URL.');
   }
@@ -113,22 +112,10 @@ async function refreshStatus(): Promise<void> {
     loggedInView.classList.add('hidden');
     loggedOutView.classList.remove('hidden');
 
-    // Set dynamic buttons based on context
-    const platform = activeContext?.platform;
-    if (platform === 'google_drive') {
-      contextAction.innerHTML = `<button class="btn-primary" id="connectGoogle">Sign in with Google Drive</button>`;
-    } else if (platform === 'notion') {
-      contextAction.innerHTML = `<button class="btn-primary" id="connectNotion">Sign in with Notion</button>`;
-    } else {
-      contextAction.innerHTML = `
-        <button class="btn-primary" id="connectGoogle" style="margin-bottom: 8px;">Sign in with Google Drive</button>
-        <button class="btn-primary" id="connectNotion">Sign in with Notion</button>
-      `;
-    }
+    // Show Google Drive as the baseline sign-in method
+    contextAction.innerHTML = `<button class="btn-primary" id="connectGoogle">Sign in with Google Drive</button>`;
 
     const googleBtn = document.getElementById('connectGoogle');
-    const notionBtn = document.getElementById('connectNotion');
-
     if (googleBtn) {
       googleBtn.onclick = () => {
         setFooterStatus('Opening Google sign-in…');
@@ -138,18 +125,6 @@ async function refreshStatus(): Promise<void> {
           .catch((err) => {
             console.error('Google login failed', err);
             setFooterStatus(err instanceof Error ? err.message : 'Google login failed', 'error');
-          });
-      };
-    }
-    if (notionBtn) {
-      notionBtn.onclick = () => {
-        setFooterStatus('Opening Notion sign-in…');
-        void launchLoginFlow('notion')
-          .then(() => refreshStatus())
-          .then(() => setFooterStatus('Signed in', 'success'))
-          .catch((err) => {
-            console.error('Notion login failed', err);
-            setFooterStatus(err instanceof Error ? err.message : 'Notion login failed', 'error');
           });
       };
     }

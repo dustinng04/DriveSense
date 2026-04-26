@@ -63,7 +63,11 @@ notionOAuthRouter.get("/callback", async (req: Request, res: Response) => {
       return res.json({ connected: true, userId });
     } catch (oauthError) {
       // If this isn't a "link account" state, fall back to the login flow.
-      if (oauthError instanceof IntegrationError && oauthError.statusCode === 400) {
+      // Use name and statusCode instead of instanceof for robustness across module boundaries.
+      const isIntegrationError = oauthError instanceof Error && 
+        (oauthError.name === "IntegrationError" || (oauthError as any).statusCode === 400);
+
+      if (isIntegrationError && (oauthError as any).statusCode === 400) {
         const { handleNotionLoginCallback } = await import("./service.js");
         const { generateAccessTokenWithLinkedAccounts } = await import("../auth/accessTokenWithOAuth.js");
 
@@ -99,6 +103,13 @@ notionOAuthRouter.get("/callback", async (req: Request, res: Response) => {
 
 notionOAuthRouter.get("/login/start", async (req: Request, res: Response) => {
   try {
+    // Extract userId from state if available for Google connection check
+    const stateParam = typeof req.query.state === "string" ? req.query.state : undefined;
+    
+    // For now, we cannot check Google connection without userId from auth context.
+    // This endpoint is public (no auth), so we return a note to the caller.
+    // The real check happens in /login/callback after we decode the state.
+    
     const redirectUri = typeof req.query.redirect_uri === "string" ? req.query.redirect_uri : undefined;
     const { getNotionLoginUrl, getNotionLoginUrlWithRedirect } = await import("./service.js");
     const authUrl = redirectUri ? await getNotionLoginUrlWithRedirect(redirectUri) : await getNotionLoginUrl();
@@ -123,8 +134,28 @@ notionOAuthRouter.get("/login/callback", async (req: Request, res: Response) => 
   try {
     const { handleNotionLoginCallback } = await import("./service.js");
     const { generateAccessTokenWithLinkedAccounts } = await import("../auth/accessTokenWithOAuth.js");
+    const { verifyLoginState } = await import("../integrations/oauthState.js");
+    const { listOAuthAccountSummaries } = await import("../integrations/oauthConnectionsRepository.js");
 
+    // Verify state and extract userId before processing
+    const { redirectUri: stateRedirectUri } = await verifyLoginState(state, "notion-login");
+
+    // Decode JWT from state to get userId for Google connection check
+    // For now, we'll check after getting userId from handleNotionLoginCallback
+    // This is slightly less efficient but maintains the existing flow
+    
     const { userId, redirectUri } = await handleNotionLoginCallback({ code, state });
+    
+    // Check if user has Google Drive connection
+    const googleAccounts = await listOAuthAccountSummaries(userId, "google_drive");
+    if (googleAccounts.length === 0) {
+      return res.redirect(
+        `${dashboardUrl}?error=notion_login_failed&code=GOOGLE_REQUIRED&message=${encodeURIComponent(
+          "Please connect Google Drive first"
+        )}`
+      );
+    }
+
     const token = await generateAccessTokenWithLinkedAccounts(userId);
 
     if (redirectUri) {

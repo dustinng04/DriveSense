@@ -70,7 +70,11 @@ googleDriveOAuthRouter.get("/callback", async (req: Request, res: Response) => {
       return res.json({ connected: true, userId });
     } catch (oauthError) {
       // If this isn't a "link account" state, fall back to the login flow.
-      if (oauthError instanceof IntegrationError && oauthError.statusCode === 400) {
+      // Use name and statusCode instead of instanceof for robustness across module boundaries.
+      const isIntegrationError = oauthError instanceof Error && 
+        (oauthError.name === "IntegrationError" || (oauthError as any).statusCode === 400);
+
+      if (isIntegrationError && (oauthError as any).statusCode === 400) {
         const { handleGoogleDriveLoginCallback } = await import("./service.js");
         const { generateAccessTokenWithLinkedAccounts } = await import("../auth/accessTokenWithOAuth.js");
 
