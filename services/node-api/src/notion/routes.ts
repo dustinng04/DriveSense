@@ -8,12 +8,10 @@ import {
   getNotionConnectionStatus,
   getNotionOauthUrl,
   handleNotionOAuthCallback,
-  queryNotionDatabase,
   readNotionPage,
   updateNotionPage,
 } from "./service.js";
-import { IntegrationError } from "../integrations/errors.js";
-import { maybeRedirectAfterOAuth, parsePageSize, sendErrorResponse } from "../integrations/routesUtils.js";
+import { maybeRedirectAfterOAuth, sendErrorResponse } from "../integrations/routesUtils.js";
 
 interface AuthenticatedLocals {
   auth: AuthenticatedRequestContext;
@@ -196,42 +194,6 @@ notionRouter.delete(
       return res.status(204).send();
     } catch (error) {
       return sendErrorResponse(res, "Failed to disconnect Notion.", error);
-    }
-  },
-);
-
-notionRouter.post(
-  "/databases/:databaseId/query",
-  requirePlatformAccount("notion"),
-  async (
-    req: Request<{ databaseId: string }, unknown, { filter?: unknown; sorts?: unknown; startCursor?: unknown }>,
-    res: Response<unknown, AuthenticatedLocals>,
-  ) => {
-    let pageSize: number | undefined;
-    try {
-      pageSize = parsePageSize(req.query.pageSize);
-    } catch (error) {
-      return sendErrorResponse(res, "Invalid pageSize.", error);
-    }
-
-    const startCursor = req.body?.startCursor;
-    if (startCursor !== undefined && typeof startCursor !== "string") {
-      return res.status(400).json({ error: "startCursor must be a string when provided." });
-    }
-
-    try {
-      const payload = await queryNotionDatabase({
-        userId: res.locals.auth.userId,
-        accountId: res.locals.platform!.accountId,
-        databaseId: req.params.databaseId,
-        filter: req.body?.filter,
-        sorts: req.body?.sorts,
-        startCursor,
-        pageSize,
-      });
-      return res.json(payload);
-    } catch (error) {
-      return sendErrorResponse(res, "Failed to query Notion database.", error);
     }
   },
 );

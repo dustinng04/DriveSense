@@ -210,7 +210,7 @@ export async function processCrossFolderScan(task: CrossFolderScanTask): Promise
 
         if (!analyzedEntry) {
           const input = pairToSuggestionInput(pair, task.platform as "google_drive" | "notion");
-          return storeSuggestion(task.userId, input);
+          return storeSuggestion(task.userId, task.accountId, input);
         }
 
         const input = pairToSuggestionInput(pair, task.platform as "google_drive" | "notion", {
@@ -220,7 +220,7 @@ export async function processCrossFolderScan(task: CrossFolderScanTask): Promise
           contentA: analyzedEntry.contentA,
           contentB: analyzedEntry.contentB,
         });
-        return storeSuggestion(task.userId, input);
+        return storeSuggestion(task.userId, task.accountId, input);
       }),
     );
   } catch (error) {

@@ -372,7 +372,10 @@ export interface IndexedFileMetadata {
   id: string;
   name: string;
   mimeType: string;
+  modifiedAt: string;
+  createdAt?: string;
   sizeBytes?: number;
+  platform: 'google_drive' | 'notion';
   parentFolderIds: string[];
 }
 

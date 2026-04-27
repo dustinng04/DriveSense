@@ -8,7 +8,7 @@
  *  3. Render a non-intrusive suggestion overlay card when the background
  *     worker has pending suggestions that haven't been shown yet
  */
-import type { BackgroundMessage, BackgroundResponse, Platform, Suggestion } from '../shared/types.js';
+import type { BackgroundMessage, BackgroundResponse, OAuthAccountSummary, Platform, Suggestion } from '../shared/types.js';
 
 const LOG_PREFIX = '[DriveSense]';
 const OVERLAY_ID = 'drivesense-overlay';
@@ -27,27 +27,130 @@ function detectPlatform(): Platform | null {
 }
 
 function extractFileId(): string | undefined {
-  // Google Drive file: /file/d/{id}/...
-  const driveMatch = window.location.pathname.match(/\/file\/d\/([^/]+)/);
-  if (driveMatch) return driveMatch[1];
+  const { pathname } = window.location;
 
-  // Google Drive folder: /drive/folders/{id}
-  const folderMatch = window.location.pathname.match(/\/folders\/([^/]+)/);
+  // Google Docs / Sheets / Slides / Forms: /document/d/{id}, /spreadsheets/d/{id}, etc.
+  const googleAppsMatch = pathname.match(/\/(?:document|spreadsheets|presentation|forms)\/d\/([^/]+)/);
+  if (googleAppsMatch) return googleAppsMatch[1];
+
+  // Google Drive file preview: /file/d/{id}/...
+  const driveFileMatch = pathname.match(/\/file\/d\/([^/]+)/);
+  if (driveFileMatch) return driveFileMatch[1];
+
+  // Google Drive folder: /drive/folders/{id} or /drive/u/N/folders/{id}
+  const folderMatch = pathname.match(/\/folders\/([^/]+)/);
   if (folderMatch) return folderMatch[1];
 
-  // Notion page: notion.so/{workspace}/{id} or notion.so/{id}
-  const notionMatch = window.location.pathname.match(/\/([a-f0-9]{32})/i);
-  if (notionMatch) return notionMatch[1];
+  // Shared drive (Team Drive): /drive/u/N/drives/{id}
+  const sharedDriveMatch = pathname.match(/\/drives\/([^/]+)/);
+  if (sharedDriveMatch) return sharedDriveMatch[1];
+
+  // Google Drive root (my-drive, shared-with-me, computers)
+  if (pathname.match(/^\/drive(\/u\/\d+)?\/(my-drive|shared-with-me|computers)/)) {
+    return 'root';
+  }
+
+  // Notion page: notion.so/{workspace}/{id} or notion.so/{slug}-{id}
+  // ID is a 32-character hex string at the end of the path; normalize to hyphenated UUID.
+  const notionMatch = pathname.match(/(?:-|\/)([a-f0-9]{32})(?:\/|$)/i);
+  if (notionMatch) {
+    // const h = notionMatch[1]!;
+    // return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+    if (notionMatch) return notionMatch[1];
+  }
 
   return undefined;
 }
 
 /**
- * Best-effort OAuth `account_id` for the active session (matches server persistence).
- * When this returns undefined and multiple accounts are linked, the user must rely on popup/session state.
+ * Determine whether the current page is a file view (Docs/Sheets/Slides/Forms)
+ * or a folder/drive view. Used to guard server-side folder crawls.
  */
-function detectPlatformAccountId(platform: Platform): string | undefined {
+function extractContextType(): 'file' | 'folder' {
+  const { hostname, pathname } = window.location;
+  // docs.google.com always hosts file editors
+  if (hostname === 'docs.google.com') return 'file';
+  // /file/d/{id} is a direct file download/preview
+  if (pathname.match(/\/file\/d\//)) return 'file';
+  // Everything else on drive.google.com (folders, drives, root) is a folder context
+  return 'folder';
+}
+
+/**
+ * Best-effort OAuth `account_id` for the active session (matches server persistence).
+ *
+ * Google Drive — Drive URLs include an authuser slot (/u/N/). We send that slot
+ * index to the background worker which calls accounts.google.com/ListAccounts
+ * (cookie-authenticated) and returns the Gaia ID for that exact slot.
+ * Falls back to DOM scraping if the background is unavailable.
+ *
+ * Notion — content scripts run on www.notion.so (same origin). We call
+ * /api/v3/syncRecordValues with the current page's block ID (from URL) to read
+ * `block[pageId].spaceId`, which is hardcoded to the page's originating workspace.
+ */
+async function detectPlatformAccountId(platform: Platform): Promise<string | undefined> {
+  // ── Google Drive ────────────────────────────────────────────────────────────
   if (platform === 'google_drive') {
+    // 1. Try to match by email from DOM first (fastest, no network)
+    const activeEmail = (() => {
+      // Profile button aria-label: "Google Account: Name (email@gmail.com)"
+      const profileLink = document.querySelector('a[href^="https://accounts.google.com/SignOutOptions"]');
+      const label = profileLink?.getAttribute('aria-label') ?? '';
+      const emailMatch = label.match(/\(([^)]+)\)/);
+      if (emailMatch?.[1]) return emailMatch[1].trim();
+
+      // Fallback: look for common email-like text in the account switcher area
+      const accountInfo = document.querySelector('.gb_re, .gb_te');
+      if (accountInfo?.textContent?.includes('@')) {
+        return accountInfo.textContent.trim();
+      }
+      return undefined;
+    })();
+
+    if (activeEmail) {
+      const { oauthAccountSummaries } = (await chrome.storage.local.get('oauthAccountSummaries')) as {
+        oauthAccountSummaries?: OAuthAccountSummary[];
+      };
+      const match = oauthAccountSummaries?.find(
+        (s) => s.provider === 'google_drive' && s.accountEmail === activeEmail,
+      );
+      if (match) return match.accountId;
+    }
+
+    /* 
+    // Commented out per user request: falling back to ListAccounts is expensive
+    const accountIndex = parseInt(
+      window.location.search.match(/[?&]authuser=(\d+)/)?.[1] ??
+      window.location.pathname.match(/\/u\/(\d+)\//)?.[1] ??
+      document.querySelector('meta[itemprop="embedURL"]')
+        ?.getAttribute('content')?.match(/\/u\/(\d+)\//)?.[1] ??
+      '0',
+      10,
+    );
+
+    try {
+      const res = await fetch(
+        'https://accounts.google.com/ListAccounts?gpsia=1&source=ogb&json=standard',
+        { credentials: 'include' },
+      );
+      if (res.ok) {
+        const html = await res.text();
+        const match = html.match(/postMessage\('([\s\S]+?)',\s*'https:\/\//);
+        if (match) {
+          const jsonStr = match[1]!.replace(
+            /\\x([0-9a-fA-F]{2})/gi,
+            (_, h: string) => String.fromCharCode(parseInt(h, 16)),
+          );
+          const data = JSON.parse(jsonStr) as [string, Array<unknown[]>];
+          const account = data[1]?.[accountIndex] as unknown[] | undefined;
+          const gaiaId = typeof account?.[10] === 'string' ? account[10] : null;
+          if (gaiaId) return gaiaId;
+        }
+      }
+    } catch { }
+    */
+
+    // Fallback: scrape Drive's inline script tags for Gaia ID
     const blob = [...document.scripts].map((s) => s.textContent ?? '').join('\n');
     const truncated = blob.length > 6_000_000 ? blob.slice(0, 6_000_000) : blob;
     const m =
@@ -56,15 +159,41 @@ function detectPlatformAccountId(platform: Platform): string | undefined {
     return m?.[1];
   }
 
+  // ── Notion ──────────────────────────────────────────────────────────────────
   if (platform === 'notion') {
-    // Notion workspace ID is typically embedded in page metadata or available via the global object
-    // Try to find it in window.__NOTION_DATA__ or similar injected globals
-    const notion = (window as unknown as Record<string, unknown>).__NOTION_DATA__ as Record<string, unknown> | undefined;
-    if (notion?.spaceId && typeof notion.spaceId === 'string') {
-      return notion.spaceId;
+    // Primary: call syncRecordValues with the current page's block ID (from URL).
+    // Every Notion block carries a `spaceId` field that is hardcoded to the workspace
+    // the page was created in — this is accurate even for multi-workspace users.
+    const pageId = extractFileId();
+    if (pageId) {
+      try {
+        const res = await fetch('https://www.notion.so/api/v3/syncRecordValues', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requests: [{ pointer: { table: 'block', id: pageId }, version: -1 }],
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json() as {
+            recordMap?: {
+              block?: Record<string, {
+                spaceId?: string;
+                value?: { role?: string }
+              }>
+            }
+          };
+          const spaceId = data.recordMap?.block?.[pageId]?.spaceId;
+          console.log(LOG_PREFIX, 'Notion spaceId', spaceId);
+          if (spaceId) return spaceId;
+        }
+      } catch {
+        // network error or API changed — fall through
+      }
     }
 
-    // Fallback: extract from localStorage if cached during OAuth
+    // Fallback: localStorage cache written during OAuth (no pageId or API failed)
     try {
       const cached = localStorage.getItem('notion_workspace_id');
       if (cached) return cached;
@@ -88,6 +217,49 @@ function sendMessage(message: BackgroundMessage): Promise<BackgroundResponse> {
       }
     });
   });
+}
+
+/**
+ * Send a CONTEXT_DETECTED message with a specific fileId (for DOM-detected previews).
+ * Does NOT run the suggestion overlay check — that stays in init().
+ */
+async function reportFilePreview(platform: Platform, fileId: string): Promise<void> {
+  const accountId = await detectPlatformAccountId(platform);
+  console.log(LOG_PREFIX, 'Drive preview detected via DOM', { fileId, url: window.location.href });
+  await sendMessage({
+    type: 'CONTEXT_DETECTED',
+    platform,
+    url: window.location.href,
+    fileId,
+    accountId,
+    contextType: 'file',
+  }).catch((err) => console.debug(LOG_PREFIX, 'reportFilePreview failed', err));
+}
+
+/**
+ * Watch for Drive list/grid item clicks where the URL does NOT change.
+ * Drive file items carry a `data-id` attribute; we use that as the fileId.
+ * A 300 ms grace period lets the URL update first — if it does, we skip
+ * (MutationObserver in the main loop will re-run init() with the correct URL).
+ */
+function setupDrivePreviewWatcher(platform: Platform): void {
+  let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+  document.addEventListener('click', (e) => {
+    const fileEl = (e.target as Element).closest('[data-id]');
+    if (!fileEl) return;
+    const domFileId = fileEl.getAttribute('data-id');
+    if (!domFileId) return;
+
+    if (pendingTimer !== null) clearTimeout(pendingTimer);
+    pendingTimer = setTimeout(() => {
+      pendingTimer = null;
+      const urlFileId = extractFileId();
+      // If the URL already reflects a file/folder, the MutationObserver handles it
+      if (urlFileId && urlFileId !== 'root') return;
+      void reportFilePreview(platform, domFileId);
+    }, 300);
+  }, true /* capture phase */);
 }
 
 // ─── Overlay rendering ────────────────────────────────────────────────────────
@@ -204,6 +376,20 @@ async function showSuggestion(suggestion: Suggestion): Promise<void> {
   });
 }
 
+async function maybeShowNextSuggestionFromStorage(): Promise<void> {
+  const { pendingSuggestions, lastShownSuggestionId } =
+    await chrome.storage.local.get(['pendingSuggestions', 'lastShownSuggestionId']) as {
+      pendingSuggestions?: Suggestion[];
+      lastShownSuggestionId?: string | null;
+    };
+
+  const suggestions = (pendingSuggestions ?? []).filter((s) => s.status === 'pending');
+  const next = suggestions.find((s) => s.id !== lastShownSuggestionId);
+  if (next) {
+    await showSuggestion(next);
+  }
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function init(): Promise<void> {
@@ -211,10 +397,11 @@ async function init(): Promise<void> {
   if (!platform) return;
 
   const fileId = extractFileId();
-  console.debug(LOG_PREFIX, `detected ${platform} context`, { fileId, url: window.location.href });
+  const contextType = extractContextType();
+  console.log(LOG_PREFIX, `detected ${platform} context`, { fileId, contextType, url: window.location.href });
 
   // Tell background worker about the current context
-  const accountId = detectPlatformAccountId(platform);
+  const accountId = await detectPlatformAccountId(platform);
   try {
     await sendMessage({
       type: 'CONTEXT_DETECTED',
@@ -222,30 +409,50 @@ async function init(): Promise<void> {
       url: window.location.href,
       fileId,
       accountId,
+      contextType,
     });
   } catch (error) {
-    console.debug(LOG_PREFIX, 'background not available yet', error);
+    console.log(LOG_PREFIX, 'background not available yet', error);
     return;
   }
 
   // Check if there's a suggestion to surface
-  const { pendingSuggestions, lastShownSuggestionId } =
-    await chrome.storage.local.get(['pendingSuggestions', 'lastShownSuggestionId']) as {
-      pendingSuggestions?: Suggestion[];
-      lastShownSuggestionId?: string | null;
-    };
-
-  const suggestions = pendingSuggestions ?? [];
-  const next = suggestions.find((s) => s.id !== lastShownSuggestionId);
-
-  if (next) {
-    // Only show one card at a time — lightweight, non-intrusive
-    await showSuggestion(next);
-  }
+  await maybeShowNextSuggestionFromStorage();
 }
 
 // Guard: only run once even if script is injected multiple times
 if (!(window as unknown as Record<string, unknown>)['__driveSenseInjected']) {
   (window as unknown as Record<string, unknown>)['__driveSenseInjected'] = true;
   void init();
+
+  // React to background cache updates so pending suggestions can surface immediately.
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local') return;
+    if (!changes.pendingSuggestions && !changes.lastShownSuggestionId) return;
+    void maybeShowNextSuggestionFromStorage();
+  });
+
+  // Watch for SPA navigations
+  let lastUrl = window.location.href;
+  const observer = new MutationObserver(() => {
+    if (window.location.href !== lastUrl) {
+      lastUrl = window.location.href;
+      console.log(LOG_PREFIX, 'SPA navigation detected, updating context', lastUrl);
+      void init();
+    }
+  });
+
+  if (document.body) {
+    observer.observe(document.body, { childList: true, subtree: true });
+  } else {
+    document.addEventListener('DOMContentLoaded', () => {
+      observer.observe(document.body, { childList: true, subtree: true });
+    });
+  }
+
+  // Drive list/grid view: watch for file preview opens where URL doesn't change
+  const platform = detectPlatform();
+  if (platform === 'google_drive' && window.location.hostname === 'drive.google.com') {
+    setupDrivePreviewWatcher(platform);
+  }
 }

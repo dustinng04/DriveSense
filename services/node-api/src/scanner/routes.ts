@@ -7,7 +7,11 @@ import { Router, type Request, type Response } from 'express';
 import type { AuthenticatedRequestContext } from '../auth/types.js';
 import { spawnCrossFolderScan, type CrossFolderScanTask } from './worker.js';
 import type { IndexedFileMetadata } from './analysis.js';
-import type { Platform } from '../context/types.js';
+import type { Platform, DetectedContext } from '../context/types.js';
+import { FileScanner } from './scanner.js';
+import { GoogleDriveScanAdapter } from '../google-drive/adapter.js';
+import { NotionScanAdapter } from '../notion/adapter.js';
+import { getRules, type FolderBlacklistRule } from '../rules/repository.js';
 
 interface AuthenticatedLocals {
   auth: AuthenticatedRequestContext;
@@ -26,9 +30,12 @@ function isIndexedFileMetadata(v: unknown): v is IndexedFileMetadata {
     typeof obj.id === 'string' &&
     typeof obj.name === 'string' &&
     typeof obj.mimeType === 'string' &&
+    typeof obj.modifiedAt === 'string' &&
+    (obj.createdAt === undefined || typeof obj.createdAt === 'string') &&
+    (obj.sizeBytes === undefined || typeof obj.sizeBytes === 'number') &&
+    (obj.platform === 'google_drive' || obj.platform === 'notion') &&
     Array.isArray(obj.parentFolderIds) &&
-    (obj.parentFolderIds as unknown[]).every((id) => typeof id === 'string') &&
-    (obj.sizeBytes === undefined || typeof obj.sizeBytes === 'number')
+    (obj.parentFolderIds as unknown[]).every((id) => typeof id === 'string')
   );
 }
 
@@ -114,4 +121,76 @@ scannerRouter.post(
       universeCount: universe.length,
     });
   },
+);
+
+/**
+ * GET /scan/folder/:folderId
+ * 
+ * Crawl lightweight metadata for up to 100 files in a folder.
+ * Skips if the folder is blacklisted in user rules.
+ */
+scannerRouter.get(
+  '/folder/:folderId',
+  async (req: Request, res: Response<unknown, AuthenticatedLocals>) => {
+    try {
+      const folderId = req.params.folderId;
+      if (!folderId || typeof folderId !== 'string') {
+        return res.status(400).json({ error: 'folderId is required' });
+      }
+
+      const platform = req.query.platform;
+      const accountId = req.header('X-Platform-Account');
+
+      if (!isValidPlatform(platform)) {
+        return res.status(400).json({ error: 'Invalid platform query param' });
+      }
+      if (!accountId) {
+        return res.status(400).json({ error: 'Missing X-Platform-Account header' });
+      }
+
+      const userId = res.locals.auth.userId;
+
+      // 1. Get rules to extract blacklist
+      const rulesInfo = await getRules(userId);
+      const rules = rulesInfo?.rules || [];
+      const blacklistedFolderIds = rules
+        .filter((r): r is FolderBlacklistRule => r.type === 'folder_blacklist' && r.platform === platform)
+        .map((r) => r.path);
+
+      // 2. Initialize scanner
+      const scanner = new FileScanner([
+        new GoogleDriveScanAdapter(),
+        new NotionScanAdapter()
+      ]);
+
+      // 3. Scan
+      const context: DetectedContext = {
+        platform,
+        contextType: platform === 'notion' ? 'page' : 'folder',
+        resourceId: folderId,
+        url: '', // unused for the scan itself
+      };
+
+      const result = await scanner.scan(userId, accountId, context, {
+        blacklistedFolderIds,
+        maxFiles: 100,
+      });
+
+      if (result.skipped) {
+        return res.status(200).json({
+          status: 'skipped',
+          reason: result.skipReason,
+          files: [],
+        });
+      }
+
+      return res.status(200).json({
+        status: 'success',
+        files: result.files,
+      });
+    } catch (error) {
+      console.error('[Scanner Routes] GET /scan/folder failed', error);
+      return res.status(500).json({ error: 'Failed to scan folder' });
+    }
+  }
 );

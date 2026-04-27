@@ -51,8 +51,8 @@ export interface ScanResult {
   files: ScannedFile[];
   /** ISO 8601 timestamp when the scan ran */
   scannedAt: string;
-  /** Whether the whitelist was evaluated */
-  whitelistChecked: boolean;
+  /** Whether the blacklist was evaluated */
+  blacklistChecked: boolean;
   /** True when the scan was skipped (e.g. folder not whitelisted) */
   skipped: boolean;
   /** Human-readable reason for skipping, when applicable */
@@ -64,10 +64,10 @@ export interface ScanResult {
  */
 export interface ScanOptions {
   /**
-   * Folder IDs or path segments that are whitelisted for scanning.
-   * An empty array means nothing is whitelisted and all scans are skipped.
+   * Folder IDs or path segments that are blacklisted from scanning.
+   * An empty array means everything is permitted.
    */
-  whitelistedFolderIds: string[];
+  blacklistedFolderIds: string[];
   /** Maximum number of files to return per scan (default: 100) */
   maxFiles?: number;
 }

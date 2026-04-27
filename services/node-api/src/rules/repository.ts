@@ -74,6 +74,12 @@ async function selectRulesRow(
   return result.rows[0];
 }
 
+const DEFAULT_RULES: Rule[] = [
+  { type: "folder_blacklist", path: "/Team Drive/Marketing/Legal", platform: "google_drive" },
+  { type: "folder_blacklist", path: "/Legal", platform: "google_drive" },
+  { type: "folder_blacklist", path: "/HR", platform: "google_drive" },
+];
+
 async function getOrCreateRulesWithinClient(
   client: PoolClient,
   userId: string,
@@ -89,7 +95,7 @@ async function getOrCreateRulesWithinClient(
      on conflict (user_id) do update
      set user_id = excluded.user_id
      returning user_id, rules, updated_at`,
-    [userId, JSON.stringify([])],
+    [userId, JSON.stringify(DEFAULT_RULES)],
   );
   return rowToStored(insertResult.rows[0]);
 }

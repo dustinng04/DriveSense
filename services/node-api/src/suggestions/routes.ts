@@ -9,6 +9,7 @@ import {
   type ReceiveSuggestionInput,
   type SuggestionStatus,
 } from "./repository.js";
+import { PLATFORM_ACCOUNT_HEADER } from "../auth/platformAccount.js";
 
 interface AuthenticatedLocals {
   auth: AuthenticatedRequestContext;
@@ -68,8 +69,11 @@ suggestionsRouter.post(
       return res.status(400).json({ error: "fileIds must be a non-empty array" });
     }
 
+    const raw = req.header(PLATFORM_ACCOUNT_HEADER) ?? req.header("X-Platform-Account");
+    const accountId = typeof raw === "string" ? raw.trim() : "";
+
     try {
-      const suggestion = await storeSuggestion(res.locals.auth.userId, {
+      const suggestion = await storeSuggestion(res.locals.auth.userId, accountId, {
         platform,
         action,
         title: title.trim(),

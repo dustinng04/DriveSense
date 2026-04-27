@@ -119,21 +119,25 @@ export default function App() {
     });
   }
 
-  // Handle direct OAuth login success
+  // Handle direct OAuth login & link success
   useMemo(() => {
     const params = new URLSearchParams(window.location.search);
     if (window.location.pathname === "/oauth-success") {
       const newToken = params.get("token");
+      const isLinked = params.get("notionConnected") === "true" || params.get("googleDriveConnected") === "true";
+      
       if (newToken) {
         localStorage.setItem(TOKEN_KEY, newToken);
         setToken(newToken);
         setTokenInput(newToken);
         pushTokenToExtension(newToken);
         setStatus("Login Successful. You can close this tab.");
-        // Clean up URL
+      } else if (isLinked) {
+        setStatus("Account linked successfully. You can close this tab.");
+      }
+
+      if (newToken || isLinked) {
         window.history.replaceState({}, "", "/");
-        
-        // Try to close the tab if it was opened by the extension
         setTimeout(() => {
           try { window.close(); } catch (e) {}
         }, 1500);

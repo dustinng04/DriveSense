@@ -190,12 +190,58 @@ export function isContextLinked(
 export interface CrossFolderScanPayload {
   platform: Platform;
   accountId: string;
-  candidates: Array<{ id: string; name: string; mimeType: string; sizeBytes?: number; parentFolderIds: string[] }>;
-  universe: Array<{ id: string; name: string; mimeType: string; sizeBytes?: number; parentFolderIds: string[] }>;
+  candidates: Array<{
+    id: string;
+    name: string;
+    mimeType: string;
+    modifiedAt: string;
+    createdAt?: string;
+    sizeBytes?: number;
+    platform: Platform;
+    parentFolderIds: string[];
+  }>;
+  universe: Array<{
+    id: string;
+    name: string;
+    mimeType: string;
+    modifiedAt: string;
+    createdAt?: string;
+    sizeBytes?: number;
+    platform: Platform;
+    parentFolderIds: string[];
+  }>;
   llm?: {
     provider?: string;
     hasByokKey?: boolean;
   };
+}
+
+export async function fetchFolderFiles(platform: Platform, folderId: string): Promise<any[]> {
+  const data = await request<{ status: string; reason?: string; files: any[] }>(
+    `/scan/folder/${folderId}?platform=${platform}`
+  );
+  if (data.status === 'skipped') {
+    console.debug('[DriveSense] folder scan skipped:', data.reason);
+    return [];
+  }
+  return data.files ?? [];
+}
+
+export async function fetchParentFolderId(platform: Platform, fileId: string): Promise<string | null> {
+  if (platform !== 'google_drive') {
+    // Notion parent resolution not implemented yet
+    return null;
+  }
+
+  try {
+    const data = await request<{ parentFolderId: string }>(
+      `/google-drive/files/${fileId}/parent`
+    );
+    return data.parentFolderId || null;
+  } catch (error) {
+    console.error('[DriveSense] Failed to fetch parent folder', error);
+    return null;
+  }
 }
 
 export async function postCrossFolderScan(payload: CrossFolderScanPayload): Promise<{ status: string; candidatesCount: number; universeCount: number }> {

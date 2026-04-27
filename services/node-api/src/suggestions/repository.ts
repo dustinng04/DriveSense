@@ -80,6 +80,7 @@ export interface ReceiveSuggestionInput {
 
 export async function storeSuggestion(
   userId: string,
+  accountId: string,
   input: ReceiveSuggestionInput,
 ): Promise<StoredSuggestion> {
   return withUserTransaction(userId, async (client) => {
@@ -93,7 +94,7 @@ export async function storeSuggestion(
       [
         userId,
         input.platform,
-        input.accountId ?? null,
+        accountId,
         input.action,
         input.status ?? "pending",
         input.title,

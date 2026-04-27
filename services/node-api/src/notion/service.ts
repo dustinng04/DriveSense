@@ -18,7 +18,7 @@ import {
 const NOTION_OAUTH_BASE = "https://api.notion.com/v1/oauth/authorize";
 const NOTION_OAUTH_TOKEN_URL = "https://api.notion.com/v1/oauth/token";
 const NOTION_API_BASE = "https://api.notion.com/v1";
-const NOTION_API_VERSION = "2022-06-28";
+const NOTION_API_VERSION = "2026-03-11";
 
 interface NotionTokenResponse {
   access_token: string;
@@ -190,10 +190,11 @@ async function notionRequest(
     headers?: Record<string, string>;
   },
 ): Promise<Response> {
-  const url = new URL(path, NOTION_API_BASE);
+  const url = new URL(NOTION_API_BASE + path);
+  const requestMethod = options?.method ?? "GET";
   const runRequest = async (token: string): Promise<Response> => {
     return fetch(url, {
-      method: options?.method ?? "GET",
+      method: requestMethod,
       headers: {
         authorization: `Bearer ${token}`,
         "Notion-Version": NOTION_API_VERSION,
@@ -210,9 +211,11 @@ async function notionRequest(
   }
 
   if (!response.ok) {
-    const details = await parseNotionError(response);
-    const statusCode = response.status === 401 || response.status === 403 ? 401 : 502;
-    throw new UpstreamApiError("Notion", details, statusCode);
+    console.log('Notion API error', response);
+    const upstreamDetails = await parseNotionError(response);
+    const normalizedStatus = response.status === 401 || response.status === 403 ? 401 : response.status;
+    const details = `[${requestMethod} ${url.pathname}] upstream_status=${response.status} message=${upstreamDetails}`;
+    throw new UpstreamApiError("Notion", details, normalizedStatus);
   }
 
   return response;
@@ -324,42 +327,6 @@ export async function disconnectNotion(userId: string, accountId: string) {
   await deleteNotionConnection(userId, accountId);
 }
 
-export async function queryNotionDatabase(params: {
-  userId: string;
-  accountId: string;
-  databaseId: string;
-  filter?: unknown;
-  sorts?: unknown;
-  startCursor?: string;
-  pageSize?: number;
-}) {
-  const requestBody: Record<string, unknown> = {};
-  if (params.filter !== undefined) {
-    requestBody.filter = params.filter;
-  }
-  if (params.sorts !== undefined) {
-    requestBody.sorts = params.sorts;
-  }
-  if (params.startCursor) {
-    requestBody.start_cursor = params.startCursor;
-  }
-  if (typeof params.pageSize === "number") {
-    requestBody.page_size = params.pageSize;
-  }
-
-  const response = await notionRequest(
-    params.userId,
-    params.accountId,
-    `/databases/${encodeURIComponent(params.databaseId)}/query`,
-    {
-      method: "POST",
-      body: requestBody,
-    },
-  );
-
-  return response.json();
-}
-
 export async function readNotionPage(userId: string, accountId: string, pageId: string) {
   const response = await notionRequest(userId, accountId, `/pages/${encodeURIComponent(pageId)}`);
   return response.json();
@@ -406,19 +373,22 @@ export async function listNotionBlockChildren(params: {
   pageSize?: number;
   startCursor?: string;
 }) {
-  const query: Record<string, string | number | undefined> = {
-    page_size: params.pageSize,
-    start_cursor: params.startCursor,
-  };
+  let path = `/blocks/${encodeURIComponent(params.blockId)}/children`;
 
-  const url = new URL(`${NOTION_API_BASE}/blocks/${encodeURIComponent(params.blockId)}/children`);
-  for (const [key, value] of Object.entries(query)) {
-    if (value !== undefined) {
-      url.searchParams.set(key, String(value));
-    }
+  const queryParams = new URLSearchParams();
+  if (params.pageSize !== undefined) {
+    queryParams.set('page_size', String(params.pageSize));
+  }
+  if (params.startCursor) {
+    queryParams.set('start_cursor', params.startCursor);
   }
 
-  const response = await notionRequest(params.userId, params.accountId, url.toString());
+  const queryString = queryParams.toString();
+  if (queryString) {
+    path += `?${queryString}`;
+  }
+
+  const response = await notionRequest(params.userId, params.accountId, path);
   return response.json();
 }
 

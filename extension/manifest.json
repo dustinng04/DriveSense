@@ -45,7 +45,9 @@
     "http://127.0.0.1:3001/*",
     "https://docs.google.com/*",
     "https://drive.google.com/*",
-    "https://www.notion.so/*"
+    "https://www.notion.so/*",
+    "https://www.googleapis.com/*",
+    "https://accounts.google.com/*"
   ],
   "externally_connectable": {
     "matches": [

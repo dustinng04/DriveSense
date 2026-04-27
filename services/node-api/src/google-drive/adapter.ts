@@ -1,6 +1,17 @@
 import { PlatformScanAdapter, ScannedFile, PlatformContentAdapter } from '../scanner/types.js';
 import { listGoogleDriveFiles, readGoogleDriveFileContent } from './service.js';
 
+// MimeTypes that DriveSense can analyze for Google Drive
+const ALLOWED_GOOGLE_DRIVE_MIMETYPES = [
+  'application/vnd.google-apps.document',      // Google Docs
+  'application/vnd.google-apps.spreadsheet',   // Google Sheets
+  'application/pdf',                            // PDF
+  'text/plain',                                 // Plain text
+  'text/markdown',                              // Markdown
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',       // .xlsx
+];
+
 /**
  * Adapter for Google Drive platform to bridge between FileScanner and GoogleDriveService.
  */
@@ -9,6 +20,7 @@ export class GoogleDriveScanAdapter implements PlatformScanAdapter {
 
   /**
    * Fetches files from a specific Google Drive folder.
+   * Filters by allowed mimeTypes directly in the query for better performance.
    */
   async listFiles(
     userId: string,
@@ -16,11 +28,16 @@ export class GoogleDriveScanAdapter implements PlatformScanAdapter {
     resourceId: string,
     maxFiles: number,
   ): Promise<ScannedFile[]> {
-    // Construct query to find files within the specific folder (resourceId)
+    // Build mimeType query: mimeType = 'type1' or mimeType = 'type2' ...
+    const mimeTypeQuery = ALLOWED_GOOGLE_DRIVE_MIMETYPES
+      .map((mt) => `mimeType = '${mt}'`)
+      .join(' or ');
+
+    // Construct query to find files within the specific folder and matching allowed mimeTypes
     const raw = await listGoogleDriveFiles({
       userId,
       accountId,
-      q: `'${resourceId}' in parents and trashed = false`,
+      q: `'${resourceId}' in parents and trashed = false and (${mimeTypeQuery})`,
       pageSize: maxFiles,
     });
 

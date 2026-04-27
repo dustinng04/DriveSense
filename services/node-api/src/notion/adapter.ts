@@ -1,5 +1,5 @@
 import { PlatformScanAdapter, ScannedFile, PlatformContentAdapter } from '../scanner/types.js';
-import { listNotionBlockChildren, queryNotionDatabase, readNotionPageMarkdown } from './service.js';
+import { listNotionBlockChildren, readNotionPage, readNotionPageMarkdown } from './service.js';
 
 /**
  * Adapter for Notion platform to bridge between FileScanner and NotionService.
@@ -9,6 +9,8 @@ export class NotionScanAdapter implements PlatformScanAdapter {
 
   /**
    * Fetches child pages or database entries from a specific Notion resource.
+   * Also includes the resource itself (page or database) in the results.
+   * Notion API returns only pages and databases, so mimeType filtering is already implicit.
    */
   async listFiles(
     userId: string,
@@ -16,19 +18,21 @@ export class NotionScanAdapter implements PlatformScanAdapter {
     resourceId: string,
     maxFiles: number,
   ): Promise<ScannedFile[]> {
-    // Determine if resource is a database or a page by attempting a database query first.
-    // In a real implementation, we might check the ID format or use a cache.
-    try {
-      const dbResult = await queryNotionDatabase({
-        userId,
-        accountId,
-        databaseId: resourceId,
-        pageSize: maxFiles,
-      });
+    const files: ScannedFile[] = [];
 
-      return (dbResult.results || []).map((page: any) => this.mapNotionPage(page));
-    } catch (error) {
-      // If database query fails, assume it's a page and fetch block children.
+    // Try to get the resource itself (page or database metadata)
+    try {
+      const resource = await readNotionPage(userId, accountId, resourceId);
+      if (resource) {
+        files.push(this.mapNotionPage(resource));
+      }
+    } catch (err) {
+      // Ignore - might not be a valid page/database or permission issue
+      console.debug('[NotionScanAdapter] Could not read resource itself:', err);
+    }
+
+    // Get children (child_page and child_database blocks)
+    try {
       const blockResult = await listNotionBlockChildren({
         userId,
         accountId,
@@ -36,32 +40,59 @@ export class NotionScanAdapter implements PlatformScanAdapter {
         pageSize: maxFiles,
       });
 
-      // Filter for child_page and child_database blocks
-      return (blockResult.results || [])
+      const childPages = (blockResult.results || [])
         .filter((block: any) => block.type === 'child_page' || block.type === 'child_database')
         .map((block: any) => this.mapNotionBlock(block));
+
+      files.push(...childPages);
+    } catch (err) {
+      console.debug('[NotionScanAdapter] Could not list children:', err);
     }
+
+    // Dedupe by ID (in case resource itself is also in children)
+    const seen = new Set<string>();
+    return files
+      .filter((f) => {
+        if (seen.has(f.id)) return false;
+        seen.add(f.id);
+        return true;
+      })
+      .slice(0, maxFiles);
   }
 
   /**
-   * Maps a Notion Page object to ScannedFile.
+   * Maps a Notion Page object (from GET /pages/{id}) to ScannedFile.
    */
   private mapNotionPage(page: any): ScannedFile {
-    // Notion page titles are stored in properties.
-    const titleProp = Object.values(page.properties || {}).find(
-      (p: any) => p.type === 'title',
-    ) as any;
-    const name = titleProp?.title?.[0]?.plain_text || 'Untitled';
+    // Extract title from various possible locations
+    let title = 'Untitled';
+
+    // Database: page.title array
+    if (Array.isArray(page.title) && page.title[0]?.plain_text) {
+      title = page.title[0].plain_text;
+    }
+    // Page: page.properties.title or page.properties.Name
+    else if (page.properties?.title?.title?.[0]?.plain_text) {
+      title = page.properties.title.title[0].plain_text;
+    } else if (page.properties?.Name?.title?.[0]?.plain_text) {
+      title = page.properties.Name.title[0].plain_text;
+    }
+
+    const parentIds: string[] = [];
+    if (page.parent?.page_id) parentIds.push(page.parent.page_id);
+    if (page.parent?.database_id) parentIds.push(page.parent.database_id);
 
     return {
       id: page.id,
-      name,
-      mimeType: page.object === 'page' ? 'application/vnd.notion.page' : 'application/vnd.notion.database',
+      name: title,
+      mimeType:
+        page.object === 'database'
+          ? 'application/vnd.notion.database'
+          : 'application/vnd.notion.page',
       modifiedAt: page.last_edited_time,
       createdAt: page.created_time,
       platform: 'notion',
-      parentFolderIds: page.parent?.page_id ? [page.parent.page_id] : 
-                       page.parent?.database_id ? [page.parent.database_id] : [],
+      parentFolderIds: parentIds,
     };
   }
 

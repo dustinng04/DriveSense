@@ -18,6 +18,9 @@ import {
   postCrossFolderScan,
   fetchSettings,
   patchSuggestionEnrichment,
+  fetchSessionMe,
+  fetchFolderFiles,
+  fetchParentFolderId,
 } from '../shared/api.js';
 import { BUILD_TIME_BEARER_TOKEN } from '../shared/buildConfig.js';
 import {
@@ -29,9 +32,10 @@ import {
   getUserId,
 } from '../shared/storage.js';
 import { initSupabase, subscribeToSuggestions } from '../shared/realtime.js';
-import { getAllIndexedFiles, getCandidatesForOrchestrator } from '../shared/metadataIndex.js';
+import { getAllIndexedFiles, getCandidatesForOrchestrator, isFolderCrawlFresh, upsertFilesFromCrawl } from '../shared/metadataIndex.js';
 import type { BackgroundMessage, BackgroundResponse } from '../shared/types.js';
 import { enrichSuggestionWithByok } from '../shared/suggestionEnrichment.js';
+import { ProgressiveCrawlQueue } from './progressiveCrawl.js';
 
 const LOG_PREFIX = '[DriveSense:bg]';
 const ALARM_NAME = 'ds_suggestion_poll';
@@ -40,13 +44,19 @@ const POLL_INTERVAL_MINUTES = 5;
 // Debounce control for cross-folder scan
 let crossFolderTimerHandle: ReturnType<typeof setTimeout> | null = null;
 let crossFolderContextKey: string | null = null;
-const CROSS_FOLDER_DELAY_MS = 30_000; // 30 seconds
+const CROSS_FOLDER_DELAY_MS = 15_000; // 15 seconds debounce
+
+// Progressive crawl queue
+const crawlQueue = new ProgressiveCrawlQueue();
 
 // ─── Supabase Realtime ────────────────────────────────────────────────────────
 
-chrome.runtime.onStartup.addListener(() => {
-  initSupabase();
-});
+// Initialize Supabase immediately at top-level to handle MV3 service worker restarts
+initSupabase();
+
+// chrome.runtime.onStartup.addListener(() => {
+//   initSupabase();
+// });
 
 // Initialize Supabase on install/update
 chrome.runtime.onInstalled.addListener(() => {
@@ -82,6 +92,7 @@ async function ensureRealtimeSubscription(): Promise<void> {
 
   // Subscribe (if not already subscribed)
   subscribeToSuggestions(userId, token, async (event) => {
+    console.log(LOG_PREFIX, 'Realtime suggestion event', event);
     if (event.eventType === 'DELETE') {
       const current = await getPendingSuggestions();
       const next = current.filter((s) => s.id !== event.oldId);
@@ -210,6 +221,13 @@ chrome.runtime.onInstalled.addListener(() => {
   void applyBuildTimeAuthTokenIfNeeded();
 });
 
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'local' && changes.authToken) {
+    console.log(LOG_PREFIX, 'authToken changed, refreshing suggestions');
+    void refreshSuggestions();
+  }
+});
+
 chrome.runtime.onMessageExternal.addListener(
   (
     message: unknown,
@@ -307,8 +325,12 @@ async function handleMessage(message: BackgroundMessage): Promise<BackgroundResp
           accountId: message.accountId,
           url: message.url,
           fileId: message.fileId,
+          contextType: message.contextType,
         },
       });
+
+      // Clear old crawl queue and prioritize new context
+      crawlQueue.clear();
 
       // Trigger in-folder refresh
       void refreshSuggestions();
@@ -343,6 +365,9 @@ async function refreshSuggestions(): Promise<void> {
   console.debug(LOG_PREFIX, 'refreshing suggestions for context', activeContext);
 
   try {
+    // Also fetch and store user identity to ensure chrome.storage.local is populated with userId and oauth accounts
+    await fetchSessionMe().catch(() => { });
+
     const suggestions = await fetchPendingSuggestions();
     const previous = await getPendingSuggestions();
     await setPendingSuggestions(suggestions);
@@ -424,7 +449,7 @@ async function performCrossFolderScan(): Promise<void> {
     const { activeContext, oauthAccountSummaries, byokKeys } = await storageGet('activeContext', 'oauthAccountSummaries', 'byokKeys');
 
     if (!activeContext?.platform || !activeContext?.fileId) {
-      console.debug(LOG_PREFIX, 'Cross-folder scan skipped: no active context or fileId');
+      console.log(LOG_PREFIX, 'Cross-folder scan skipped: no active context or fileId');
       return;
     }
 
@@ -434,24 +459,105 @@ async function performCrossFolderScan(): Promise<void> {
       .find((acc) => acc.accountId === activeContext.accountId)?.accountId;
 
     if (!accountId) {
-      console.debug(LOG_PREFIX, 'Cross-folder scan skipped: cannot resolve accountId');
+      console.log(LOG_PREFIX, 'Cross-folder scan skipped: cannot resolve accountId');
       return;
     }
 
+    // Determine the folder to scan
+    let folderIdToScan = activeContext.fileId;
+    let shouldScan = true;
+
+    if (activeContext.contextType === 'file') {
+      // File context: resolve parent folder
+      const parentFolderId = await fetchParentFolderId(activeContext.platform as any, activeContext.fileId);
+      
+      if (!parentFolderId) {
+        console.log(LOG_PREFIX, 'Skipping folder crawl: file has no parent folder');
+        shouldScan = false;
+      } else {
+        folderIdToScan = parentFolderId;
+        console.log(LOG_PREFIX, `File context: will scan parent folder ${parentFolderId}`);
+      }
+    } else if (activeContext.contextType === 'folder') {
+      // Folder context: check if it's root
+      if (activeContext.fileId === 'root') {
+        console.log(LOG_PREFIX, 'Skipping folder crawl: user is browsing root folder view (too broad)');
+        shouldScan = false;
+      }
+    }
+
+    // Check if we need to crawl the folder
+    if (shouldScan) {
+      const isFresh = await isFolderCrawlFresh(activeContext.platform as any, accountId, folderIdToScan);
+      if (!isFresh) {
+        console.log(LOG_PREFIX, `Folder crawl is stale or missing. Fetching from Node API...`);
+        const fetchedFiles = await fetchFolderFiles(activeContext.platform as any, folderIdToScan);
+        if (fetchedFiles.length > 0) {
+          await upsertFilesFromCrawl(activeContext.platform as any, accountId, folderIdToScan, fetchedFiles);
+        }
+      }
+
+      // Enqueue progressive crawl to discover parent + siblings
+      await crawlQueue.enqueue({
+        folderId: folderIdToScan,
+        platform: activeContext.platform as any,
+        accountId,
+        priority: 0, // Current folder (highest priority)
+        depth: 0,
+      });
+
+      // Start processing queue (non-blocking)
+      void crawlQueue.processQueue().catch(err => {
+        console.error(LOG_PREFIX, 'Progressive crawl failed:', err);
+      });
+    }
+
+    // Log metadataIndex state so we can verify it's populated
+    const { metadataIndex } = await storageGet('metadataIndex');
+    console.log(LOG_PREFIX, 'metadataIndex snapshot', {
+      version: metadataIndex?.version,
+      totalEntries: Object.keys(metadataIndex?.entries ?? {}).length,
+      totalFolderCrawls: Object.keys(metadataIndex?.folderCrawls ?? {}).length,
+      folderCrawlKeys: Object.keys(metadataIndex?.folderCrawls ?? {}),
+    });
+
     // Fetch candidates (files in current folder) and universe (all other files)
-    const candidates = await getCandidatesForOrchestrator(
+    const candidatesRaw = await getCandidatesForOrchestrator(
       activeContext.platform as any,
       accountId,
-      activeContext.fileId,
+      folderIdToScan, // Use resolved folder ID, not activeContext.fileId
     );
 
-    const universe = await getAllIndexedFiles(activeContext.platform as any, accountId);
+    const universeRaw = await getAllIndexedFiles(activeContext.platform as any, accountId);
 
     // Filter universe to exclude candidates (to avoid comparing file against itself)
-    const candidateIds = new Set(candidates.map((c) => c.id));
-    const universeFiltered = universe.filter((u) => !candidateIds.has(u.id));
+    const candidateIds = new Set(candidatesRaw.map((c) => c.id));
+    const universeFiltered = universeRaw.filter((u) => !candidateIds.has(u.id));
 
-    if (candidates.length === 0 || universeFiltered.length === 0) {
+    // Map to payload shape (include all required fields)
+    const candidates = candidatesRaw.map((f) => ({
+      id: f.id,
+      name: f.name,
+      mimeType: f.mimeType,
+      modifiedAt: f.modifiedAt,
+      createdAt: f.createdAt,
+      sizeBytes: f.sizeBytes,
+      platform: f.platform,
+      parentFolderIds: f.parentFolderIds,
+    }));
+
+    const universe = universeFiltered.map((f) => ({
+      id: f.id,
+      name: f.name,
+      mimeType: f.mimeType,
+      modifiedAt: f.modifiedAt,
+      createdAt: f.createdAt,
+      sizeBytes: f.sizeBytes,
+      platform: f.platform,
+      parentFolderIds: f.parentFolderIds,
+    }));
+
+    if (candidates.length === 0 || universe.length === 0) {
       console.debug(LOG_PREFIX, 'Cross-folder scan skipped: insufficient files to compare');
       return;
     }
@@ -469,7 +575,7 @@ async function performCrossFolderScan(): Promise<void> {
 
     console.debug(
       LOG_PREFIX,
-      `Initiating cross-folder scan: ${candidates.length} candidates vs ${universeFiltered.length} universe files, LLM provider: ${llmProvider}, BYOK: ${hasByokKey}`,
+      `Initiating cross-folder scan: ${candidates.length} candidates vs ${universe.length} universe files, LLM provider: ${llmProvider}, BYOK: ${hasByokKey}`,
     );
 
     // Post to Node API (async, no await needed)
@@ -477,7 +583,7 @@ async function performCrossFolderScan(): Promise<void> {
       platform: activeContext.platform as any,
       accountId,
       candidates,
-      universe: universeFiltered,
+      universe,
       llm: {
         provider: llmProvider,
         hasByokKey,
@@ -504,5 +610,41 @@ async function applyBuildTimeAuthTokenIfNeeded(): Promise<void> {
 }
 
 void applyBuildTimeAuthTokenIfNeeded();
+
+// ─── Tab visibility listeners for crawl queue ────────────────────────────────
+
+/**
+ * Pause crawl queue when user switches away from Drive/Notion tabs.
+ * Resume when they come back.
+ */
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  try {
+    const tab = await chrome.tabs.get(activeInfo.tabId);
+    const url = tab.url || '';
+    
+    if (url.includes('drive.google.com') || url.includes('notion.so')) {
+      crawlQueue.resume();
+    } else {
+      crawlQueue.pause('tab_inactive');
+    }
+  } catch (error) {
+    // Tab might be closing, ignore
+  }
+});
+
+/**
+ * Also check when tabs are updated (e.g., navigation within same tab).
+ */
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete') {
+    const url = tab.url || '';
+    
+    if (url.includes('drive.google.com') || url.includes('notion.so')) {
+      crawlQueue.resume();
+    } else {
+      crawlQueue.pause('tab_inactive');
+    }
+  }
+});
 
 console.debug(LOG_PREFIX, 'service worker started');

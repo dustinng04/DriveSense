@@ -56,7 +56,7 @@ export class FileScanner {
       context,
       files: [],
       scannedAt,
-      whitelistChecked: false,
+      blacklistChecked: false,
       skipped: true,
       skipReason,
     });
@@ -73,18 +73,18 @@ export class FileScanner {
       return skip('No resource ID available for the current context.');
     }
 
-    // Whitelist check — the resource ID must appear in the whitelist.
-    // An empty whitelist means nothing is permitted.
-    const isWhitelisted = options.whitelistedFolderIds.includes(context.resourceId);
+    // Blacklist check — the resource ID must not appear in the blacklist.
+    // An empty blacklist means everything is permitted.
+    const isBlacklisted = options.blacklistedFolderIds.includes(context.resourceId);
 
-    if (!isWhitelisted) {
+    if (isBlacklisted) {
       return {
         context,
         files: [],
         scannedAt,
-        whitelistChecked: true,
+        blacklistChecked: true,
         skipped: true,
-        skipReason: `Resource "${context.resourceId}" is not in the whitelist. Add it to Settings → Whitelisted Folders before scanning.`,
+        skipReason: `Resource "${context.resourceId}" is in the blacklist and will not be scanned.`,
       };
     }
 
@@ -95,7 +95,7 @@ export class FileScanner {
       context,
       files,
       scannedAt,
-      whitelistChecked: true,
+      blacklistChecked: true,
       skipped: false,
     };
   }

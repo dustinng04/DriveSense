@@ -13,8 +13,8 @@ import {
   getByokKey,
   getPendingSuggestions,
   setAuthToken,
-  setByokKey,
   storageGet,
+  storageSet,
 } from '../shared/storage.js';
 import {
   fetchSessionMe,
@@ -221,12 +221,16 @@ async function populateByokFields(): Promise<void> {
 
 el('saveKeys').addEventListener('click', async () => {
   try {
-    await Promise.all([
-      setByokKey('gemini', (el('keyGemini') as HTMLInputElement).value),
-      setByokKey('openai', (el('keyOpenai') as HTMLInputElement).value),
-      setByokKey('anthropic', (el('keyAnthropic') as HTMLInputElement).value),
-      setByokKey('glm', (el('keyGlm') as HTMLInputElement).value),
-    ]);
+    const { byokKeys } = await storageGet('byokKeys');
+    await storageSet({
+      byokKeys: {
+        ...byokKeys,
+        gemini: (el('keyGemini') as HTMLInputElement).value,
+        openai: (el('keyOpenai') as HTMLInputElement).value,
+        anthropic: (el('keyAnthropic') as HTMLInputElement).value,
+        glm: (el('keyGlm') as HTMLInputElement).value,
+      },
+    });
     setFooterStatus('Keys saved locally — never sent to server', 'success');
   } catch (error) {
     setFooterStatus(error instanceof Error ? error.message : 'Failed to save keys', 'error');

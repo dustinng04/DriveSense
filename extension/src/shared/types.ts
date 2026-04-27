@@ -11,6 +11,7 @@ export type Platform = 'google_drive' | 'notion';
 export interface OAuthAccountSummary {
   provider: Platform;
   accountId: string;
+  accountEmail: string | null;
   isPrimary: boolean;
 }
 export type Provider = 'gemini' | 'openai' | 'anthropic' | 'glm';
@@ -145,6 +146,8 @@ export interface ExtensionStorage {
     accountId?: string;
     url: string;
     fileId?: string;
+    /** Whether the user is viewing a file (Docs/Sheets/Slides) or a folder/drive root */
+    contextType?: 'file' | 'folder';
   } | null;
   /** Last `/session/me` oauth rows — used to map context email → account id for API headers */
   oauthAccountSummaries: OAuthAccountSummary[];
@@ -161,6 +164,8 @@ export type BackgroundMessage =
     url: string;
     fileId?: string;
     accountId?: string;
+    /** Whether the user is viewing a file (Docs/Sheets/Slides) or a folder/drive root */
+    contextType?: 'file' | 'folder';
   }
   | { type: 'GET_BYOK_KEY'; provider: Provider }
   | { type: 'GET_PENDING_COUNT' }

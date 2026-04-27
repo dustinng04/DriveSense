@@ -229,6 +229,27 @@ googleDriveRouter.get(
 );
 
 googleDriveRouter.get(
+  "/files/:fileId/parent",
+  requirePlatformAccount("google_drive"),
+  async (req: Request<{ fileId: string }>, res: Response<unknown, AuthenticatedLocals>) => {
+    try {
+      const metadata = await readGoogleDriveFileMetadata(
+        res.locals.auth.userId,
+        res.locals.platform!.accountId,
+        req.params.fileId,
+      );
+      
+      const parents = (metadata as any).parents || [];
+      const parentFolderId = parents[0] || 'root';
+
+      return res.json({ parentFolderId });
+    } catch (error) {
+      return sendErrorResponse(res, "Failed to get parent folder.", error);
+    }
+  },
+);
+
+googleDriveRouter.get(
   "/files/:fileId/content",
   requirePlatformAccount("google_drive"),
   async (req: Request<{ fileId: string }>, res: Response<unknown, AuthenticatedLocals>) => {

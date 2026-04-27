@@ -33,6 +33,8 @@ export type SuggestionEvent = {
   oldId?: string;
 };
 
+let currentUserId: string | null = null;
+
 /**
  * Subscribe to all suggestion updates for the authenticated user.
  * Calls onSuggestionEvent whenever a suggestion is inserted, updated, or deleted.
@@ -50,10 +52,23 @@ export function subscribeToSuggestions(
   // Set the custom auth token for Realtime RLS
   supabaseClient.realtime.setAuth(authToken);
 
-  // Unsubscribe from any existing channel
+  // Prevent thrashing: if already subscribed to the same user in this lifecycle, do nothing
+  if (suggestionsChannel && currentUserId === userId) {
+    return () => {
+      if (suggestionsChannel) {
+        void supabaseClient?.removeChannel(suggestionsChannel);
+        suggestionsChannel = null;
+        currentUserId = null;
+      }
+    };
+  }
+
+  // Unsubscribe from any existing channel if user changed
   if (suggestionsChannel) {
     void supabaseClient.removeChannel(suggestionsChannel);
   }
+
+  currentUserId = userId;
 
   // Subscribe to suggestions table filtered by user
   suggestionsChannel = supabaseClient
@@ -82,8 +97,10 @@ export function subscribeToSuggestions(
       },
     )
     .subscribe((status: string, err?: Error) => {
-      if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
-        console.error('[Realtime] Subscription failed or closed:', status, err);
+      if (status === 'CLOSED') {
+        console.debug('[Realtime] Subscription closed.');
+      } else if (status === 'CHANNEL_ERROR') {
+        console.error('[Realtime] Subscription error:', err);
       } else if (status === 'SUBSCRIBED') {
         console.debug('[Realtime] Subscribed to suggestions.');
       }
@@ -94,6 +111,7 @@ export function subscribeToSuggestions(
     if (suggestionsChannel) {
       void supabaseClient?.removeChannel(suggestionsChannel);
       suggestionsChannel = null;
+      currentUserId = null;
     }
   };
 }
