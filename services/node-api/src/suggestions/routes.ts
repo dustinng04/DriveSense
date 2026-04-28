@@ -10,6 +10,8 @@ import {
   type SuggestionStatus,
 } from "./repository.js";
 import { PLATFORM_ACCOUNT_HEADER } from "../auth/platformAccount.js";
+import { executeArchive, executeRename, executeMerge, executeEdit } from "./executor.js";
+import { withUserTransaction } from "../db/withUserTransaction.js";
 
 interface AuthenticatedLocals {
   auth: AuthenticatedRequestContext;
@@ -163,9 +165,120 @@ suggestionsRouter.patch(
     }
 
     try {
-      const suggestion = await updateSuggestionStatus(res.locals.auth.userId, req.params.id, {
-        status,
-      });
+      const userId = res.locals.auth.userId;
+      const suggestionId = req.params.id;
+
+      // For confirmed status, execute the action on the platform
+      if (status === "confirmed") {
+        const suggestion = await getSuggestion(userId, suggestionId);
+        if (!suggestion) {
+          return res.status(404).json({ error: "Suggestion not found." });
+        }
+
+        // Guard: only process pending suggestions
+        if (suggestion.status !== "pending") {
+          return res.status(409).json({
+            error: "Suggestion has already been processed.",
+            currentStatus: suggestion.status,
+          });
+        }
+
+        const raw = req.header(PLATFORM_ACCOUNT_HEADER) ?? req.header("X-Platform-Account");
+        const accountId = typeof raw === "string" ? raw.trim() : "";
+
+        // Execute the action and store undo entries in a transaction
+        try {
+          const platformCtx = {
+            userId,
+            accountId,
+            platform: suggestion.platform as "google_drive" | "notion",
+          };
+
+          // Extract action-specific parameters from request body
+          const { newName, newContent } = req.body ?? {};
+
+          // Execute appropriate action
+          let undoEntries;
+          if (suggestion.action === "archive") {
+            undoEntries = await executeArchive(platformCtx, suggestion.fileIds[0]);
+          } else if (suggestion.action === "rename") {
+            if (typeof newName !== "string" || !newName.trim()) {
+              return res.status(400).json({
+                error: "rename action requires 'newName' in request body",
+              });
+            }
+            undoEntries = await executeRename(platformCtx, suggestion.fileIds[0], newName.trim());
+          } else if (suggestion.action === "merge") {
+            undoEntries = await executeMerge(platformCtx, suggestion.fileIds[0], suggestion.fileIds[1]);
+          } else if (suggestion.action === "review") {
+            return res.status(400).json({
+              error: "review action is not executable (user must act manually)",
+            });
+          } else {
+            return res.status(400).json({ error: `Action '${suggestion.action}' not supported for execution` });
+          }
+
+          // Store undo entries and update suggestion status in a transaction
+          await withUserTransaction(userId, async (client) => {
+            // Store each undo entry
+            for (const entry of undoEntries) {
+              await client.query(
+                `insert into public.undo_history
+                  (user_id, suggestion_id, action, platform, action_details, undo_payload,
+                   account_id, action_group_id, action_group_step, expires_at)
+                 values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10)`,
+                [
+                  userId,
+                  suggestionId,
+                  entry.action,
+                  entry.platform,
+                  JSON.stringify(entry.actionDetails),
+                  JSON.stringify(entry.undoPayload),
+                  accountId,
+                  entry.actionGroupId ?? null,
+                  entry.actionGroupStep ?? null,
+                  entry.expiresAt ?? null,
+                ],
+              );
+            }
+
+            // Update suggestion status
+            await client.query(
+              `update public.suggestions
+               set status = $2, confirmed_at = now()
+               where user_id = $1 and id = $3`,
+              [userId, "confirmed", suggestionId],
+            );
+          });
+
+          // Return updated suggestion
+          const updated = await getSuggestion(userId, suggestionId);
+          return res.json({
+            suggestion: updated,
+            undoRef: undoEntries.length === 1
+              ? undefined // Will be populated by client with the entry ID
+              : undoEntries[0].actionGroupId, // For grouped entries, use action_group_id
+          });
+        } catch (executorError) {
+          // Execution failed — suggestion stays pending for retry
+          if (executorError instanceof Error) {
+            if (executorError.message.includes("not yet implemented")) {
+              return res.status(501).json({
+                error: "This action executor is not yet implemented",
+                message: executorError.message,
+              });
+            }
+            return res.status(502).json({
+              error: "Platform API call failed.",
+              message: executorError.message,
+            });
+          }
+          return res.status(502).json({ error: "Platform API call failed." });
+        }
+      }
+
+      // For non-confirmed statuses (skip, dismiss), just update DB
+      const suggestion = await updateSuggestionStatus(userId, suggestionId, { status });
       if (!suggestion) {
         return res.status(404).json({ error: "Suggestion not found." });
       }

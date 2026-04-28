@@ -73,34 +73,46 @@ export interface ScanOptions {
 }
 
 /**
- * Platform-specific adapter that the FileScanner delegates to.
- * Implement one adapter per platform (Drive, Notion, …).
+ * Platform adapter for file scanning operations.
+ * Each platform (Drive, Notion, …) implements listFiles for the FileScanner.
  */
 export interface PlatformScanAdapter {
   /** Platform this adapter handles */
   platform: Platform;
+
   /**
-   * Fetch lightweight file metadata for the given resource.
+   * Fetch lightweight file metadata for the given resource (folder/page/database).
    * @param userId     - DriveSense user ID
    * @param accountId  - Platform-native account ID (e.g. Google sub, Notion workspace/bot ID)
    * @param resourceId - Drive folder ID, Notion database/page ID, etc.
    * @param maxFiles   - Upper bound on how many items to return
+   * @returns Normalized metadata for files found in the resource
    */
-  listFiles(userId: string, accountId: string, resourceId: string, maxFiles: number): Promise<ScannedFile[]>;
+  listFiles(
+    userId: string,
+    accountId: string,
+    resourceId: string,
+    maxFiles: number
+  ): Promise<ScannedFile[]>;
 }
 
 /**
- * Platform adapter for fetching text content for similarity analysis.
- * Implement one adapter per platform to handle content extraction.
+ * Platform adapter for content extraction.
+ * Each platform (Drive, Notion, …) implements fetchTextContent for similarity analysis.
  */
 export interface PlatformContentAdapter {
   /** Platform this adapter handles */
   platform: Platform;
-  
+
   /**
-   * Fetch text content for analysis.
+   * Fetch text content for similarity analysis.
    * Returns markdown/plain text for documents.
-   * Google Sheets are excluded (metadata-only staleness).
+   * Should return null for unsupported types (e.g. Google Sheets).
+   * @param userId    - DriveSense user ID
+   * @param accountId - Platform account ID
+   * @param fileId    - Platform file ID
+   * @param mimeType  - File's MIME type (to skip unsupported types early)
+   * @returns Plain text/markdown content, or null if unsupported
    */
   fetchTextContent(
     userId: string,
@@ -108,4 +120,165 @@ export interface PlatformContentAdapter {
     fileId: string,
     mimeType: string
   ): Promise<string | null>;
+}
+
+/**
+ * Platform adapter for file management operations (execution & undo).
+ * Each platform (Drive, Notion, …) implements these for suggestion execution.
+ * Divides responsibilities: Service handles API calls → Adapter handles execution logic & undo payload construction.
+ */
+export interface PlatformExecutionAdapter {
+  /** Platform this adapter handles */
+  platform: Platform;
+
+  // ============================================================
+  // METADATA OPERATIONS
+  // ============================================================
+
+  /**
+   * Read detailed metadata for a single file.
+   * @param userId    - DriveSense user ID
+   * @param accountId - Platform account ID
+   * @param fileId    - Platform file ID
+   * @returns Normalized file metadata, null if not found
+   */
+  getFileMetadata(
+    userId: string,
+    accountId: string,
+    fileId: string
+  ): Promise<ScannedFile | null>;
+
+  /**
+   * Read text content for a file.
+   * @param userId    - DriveSense user ID
+   * @param accountId - Platform account ID
+   * @param fileId    - Platform file ID
+   * @returns File content as plain text, null if unsupported/not found
+   */
+  getFileContent(
+    userId: string,
+    accountId: string,
+    fileId: string
+  ): Promise<string | null>;
+
+  // ============================================================
+  // EXECUTION OPERATIONS (from plan)
+  // ============================================================
+
+  /**
+   * Execute archive action: trash/archive a file.
+   * Returns undo payload for reversal.
+   * @param userId    - DriveSense user ID
+   * @param accountId - Platform account ID
+   * @param fileId    - Platform file ID
+   * @returns Undo payload needed to reverse this action
+   */
+  executeArchive(
+    userId: string,
+    accountId: string,
+    fileId: string
+  ): Promise<Record<string, unknown>>;
+
+  /**
+   * Execute rename action: rename a file.
+   * @param userId    - DriveSense user ID
+   * @param accountId - Platform account ID
+   * @param fileId    - Platform file ID
+   * @param newName   - New file name
+   * @returns Undo payload (old name, etc.)
+   */
+  executeRename(
+    userId: string,
+    accountId: string,
+    fileId: string,
+    newName: string
+  ): Promise<Record<string, unknown>>;
+
+  /**
+   * Execute merge action: append source content to survivor, then archive source.
+   * @param userId       - DriveSense user ID
+   * @param accountId    - Platform account ID
+   * @param survivorId   - File to merge into
+   * @param sourceId     - File to merge from (will be archived)
+   * @returns Array of undo payloads (one per step, with action_group_id if multi-step)
+   */
+  executeMerge(
+    userId: string,
+    accountId: string,
+    survivorId: string,
+    sourceId: string
+  ): Promise<Array<{ payload: Record<string, unknown>; step?: number }>>;
+
+  /**
+   * Execute edit action: update file content.
+   * @param userId    - DriveSense user ID
+   * @param accountId - Platform account ID
+   * @param fileId    - Platform file ID
+   * @param newContent - New file content (plain text)
+   * @returns Undo payload (revision id, old content, etc.)
+   */
+  executeEdit(
+    userId: string,
+    accountId: string,
+    fileId: string,
+    newContent: string
+  ): Promise<Record<string, unknown>>;
+
+  // ============================================================
+  // UNDO OPERATIONS (from plan)
+  // ============================================================
+
+  /**
+   * Undo an archive action: restore/untrash a file.
+   * @param userId    - DriveSense user ID
+   * @param accountId - Platform account ID
+   * @param undoPayload - Payload from executeArchive (fileId, etc.)
+   * @returns true if successful
+   */
+  undoArchive(
+    userId: string,
+    accountId: string,
+    undoPayload: Record<string, unknown>
+  ): Promise<boolean>;
+
+  /**
+   * Undo a rename action: restore original name.
+   * @param userId    - DriveSense user ID
+   * @param accountId - Platform account ID
+   * @param undoPayload - Payload from executeRename (fileId, oldName)
+   * @returns true if successful
+   */
+  undoRename(
+    userId: string,
+    accountId: string,
+    undoPayload: Record<string, unknown>
+  ): Promise<boolean>;
+
+  /**
+   * Undo a merge action: delete appended blocks, restore source.
+   * @param userId    - DriveSense user ID
+   * @param accountId - Platform account ID
+   * @param undoPayload - Payload from executeMerge (step-specific)
+   * @param step      - Step number (1=append, 2=archive)
+   * @returns true if successful
+   */
+  undoMerge(
+    userId: string,
+    accountId: string,
+    undoPayload: Record<string, unknown>,
+    step?: number
+  ): Promise<boolean>;
+
+  /**
+   * Undo an edit action: restore previous content/revision.
+   * @param userId    - DriveSense user ID
+   * @param accountId - Platform account ID
+   * @param undoPayload - Payload from executeEdit (revisionId, old blocks, etc.)
+   * @returns true if successful
+   */
+  undoEdit(
+    userId: string,
+    accountId: string,
+    undoPayload: Record<string, unknown>
+  ): Promise<boolean>;
 }

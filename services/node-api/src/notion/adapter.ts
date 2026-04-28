@@ -1,5 +1,15 @@
-import { PlatformScanAdapter, ScannedFile, PlatformContentAdapter } from '../scanner/types.js';
-import { listNotionBlockChildren, readNotionPage, readNotionPageMarkdown } from './service.js';
+import {
+  PlatformScanAdapter,
+  ScannedFile,
+  PlatformContentAdapter,
+  PlatformExecutionAdapter,
+} from '../scanner/types.js';
+import {
+  listNotionBlockChildren,
+  readNotionPage,
+  readNotionPageMarkdown,
+  updateNotionPage,
+} from './service.js';
 
 /**
  * Adapter for Notion platform to bridge between FileScanner and NotionService.
@@ -130,5 +140,190 @@ export class NotionContentAdapter implements PlatformContentAdapter {
     mimeType: string,
   ): Promise<string | null> {
     return readNotionPageMarkdown(userId, accountId, pageId);
+  }
+}
+
+/**
+ * Execution adapter for Notion to handle suggestion execution and undo operations.
+ * Bridges between the executor and Notion API, managing blocks and page properties.
+ */
+export class NotionExecutionAdapter implements PlatformExecutionAdapter {
+  readonly platform = 'notion';
+
+  async getFileMetadata(
+    userId: string,
+    accountId: string,
+    pageId: string,
+  ): Promise<ScannedFile | null> {
+    try {
+      const page = (await readNotionPage(userId, accountId, pageId)) as Record<string, unknown>;
+      return this.mapNotionPage(page);
+    } catch {
+      return null;
+    }
+  }
+
+  async getFileContent(userId: string, accountId: string, pageId: string): Promise<string | null> {
+    try {
+      return readNotionPageMarkdown(userId, accountId, pageId);
+    } catch {
+      return null;
+    }
+  }
+
+  async executeArchive(
+    userId: string,
+    accountId: string,
+    pageId: string,
+  ): Promise<Record<string, unknown>> {
+    // Step: Archive the page
+    await updateNotionPage({
+      userId,
+      accountId,
+      pageId,
+      inTrash: true,
+    });
+
+    // Return undo payload (pageId sufficient for unarchive)
+    return {
+      pageId,
+    };
+  }
+
+  async executeRename(
+    userId: string,
+    accountId: string,
+    pageId: string,
+    newName: string,
+  ): Promise<Record<string, unknown>> {
+    // Get current title
+    const page = (await readNotionPage(userId, accountId, pageId)) as Record<string, unknown>;
+    const oldTitle = this.extractNotionTitle(page);
+
+    // Rename via properties update
+    await updateNotionPage({
+      userId,
+      accountId,
+      pageId,
+      properties: {
+        title: [{ text: { content: newName } }],
+      },
+    });
+
+    // Return undo payload
+    return {
+      pageId,
+      oldTitle,
+    };
+  }
+
+  async executeMerge(
+    userId: string,
+    accountId: string,
+    survivorPageId: string,
+    sourcePageId: string,
+  ): Promise<Array<{ payload: Record<string, unknown>; step?: number }>> {
+    // TODO: Implement Notion merge with block copying and source archiving
+    throw new Error('Notion merge executor not yet implemented');
+  }
+
+  async executeEdit(
+    userId: string,
+    accountId: string,
+    pageId: string,
+    newContent: string,
+  ): Promise<Record<string, unknown>> {
+    // TODO: Implement Notion edit with block patching
+    throw new Error('Notion edit executor not yet implemented');
+  }
+
+  async undoArchive(
+    userId: string,
+    accountId: string,
+    undoPayload: Record<string, unknown>,
+  ): Promise<boolean> {
+    // TODO: Implement Notion unarchive operation
+    throw new Error('Notion undo archive not yet implemented');
+  }
+
+  async undoRename(
+    userId: string,
+    accountId: string,
+    undoPayload: Record<string, unknown>,
+  ): Promise<boolean> {
+    // TODO: Implement Notion rename to original title
+    throw new Error('Notion undo rename not yet implemented');
+  }
+
+  async undoMerge(
+    userId: string,
+    accountId: string,
+    undoPayload: Record<string, unknown>,
+    step?: number,
+  ): Promise<boolean> {
+    // TODO: Implement Notion merge undo (delete appended blocks and unarchive source)
+    throw new Error('Notion undo merge not yet implemented');
+  }
+
+  async undoEdit(
+    userId: string,
+    accountId: string,
+    undoPayload: Record<string, unknown>,
+  ): Promise<boolean> {
+    // TODO: Implement Notion edit undo (restore block content)
+    throw new Error('Notion undo edit not yet implemented');
+  }
+
+  // ============================================================
+  // Helpers
+  // ============================================================
+
+  /**
+   * Maps a Notion Page object to ScannedFile.
+   */
+  private mapNotionPage(page: any): ScannedFile {
+    let title = 'Untitled';
+    if (Array.isArray(page.title) && page.title[0]?.plain_text) {
+      title = page.title[0].plain_text;
+    } else if (page.properties?.title?.title?.[0]?.plain_text) {
+      title = page.properties.title.title[0].plain_text;
+    } else if (page.properties?.Name?.title?.[0]?.plain_text) {
+      title = page.properties.Name.title[0].plain_text;
+    }
+
+    const parentIds: string[] = [];
+    if (page.parent?.page_id) parentIds.push(page.parent.page_id);
+    if (page.parent?.database_id) parentIds.push(page.parent.database_id);
+
+    return {
+      id: page.id,
+      name: title,
+      mimeType:
+        page.object === 'database'
+          ? 'application/vnd.notion.database'
+          : 'application/vnd.notion.page',
+      modifiedAt: page.last_edited_time,
+      createdAt: page.created_time,
+      platform: 'notion',
+      parentFolderIds: parentIds,
+    };
+  }
+
+  /**
+   * Extract title from Notion page properties.
+   */
+  private extractNotionTitle(page: Record<string, unknown>): string {
+    const properties = page.properties as Record<string, unknown>;
+    if (!properties || typeof properties !== 'object') return '';
+
+    const titleProp = properties.title as Record<string, unknown>;
+    if (!titleProp || typeof titleProp !== 'object') return '';
+
+    const titleArray = titleProp.rich_text as unknown[];
+    if (!Array.isArray(titleArray) || titleArray.length === 0) return '';
+
+    const titleObj = titleArray[0] as Record<string, unknown>;
+    const text = titleObj.text as Record<string, unknown>;
+    return (text?.content as string) ?? '';
   }
 }

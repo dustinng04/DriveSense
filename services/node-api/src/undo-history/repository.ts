@@ -9,8 +9,13 @@ export interface UndoAction {
   actionDetails: Record<string, unknown>;
   undoPayload: Record<string, unknown>;
   executedAt: string;
-  undoneAt: string | null;
+  undoStatus: "available" | "expired" | "failed" | "done";
+  undoError?: string;
   createdAt: string;
+  accountId?: string;
+  actionGroupId?: string;
+  actionGroupStep?: number;
+  expiresAt?: string;
 }
 
 interface UndoHistoryRow {
@@ -22,8 +27,13 @@ interface UndoHistoryRow {
   action_details: Record<string, unknown>;
   undo_payload: Record<string, unknown>;
   executed_at: string;
-  undone_at: string | null;
+  undo_status: "available" | "expired" | "failed" | "done";
+  undo_error?: string;
   created_at: string;
+  account_id?: string;
+  action_group_id?: string;
+  action_group_step?: number;
+  expires_at?: string;
 }
 
 function rowToAction(row: UndoHistoryRow): UndoAction {
@@ -36,14 +46,20 @@ function rowToAction(row: UndoHistoryRow): UndoAction {
     actionDetails: row.action_details,
     undoPayload: row.undo_payload,
     executedAt: row.executed_at,
-    undoneAt: row.undone_at,
+    undoStatus: row.undo_status,
+    undoError: row.undo_error,
     createdAt: row.created_at,
+    accountId: row.account_id,
+    actionGroupId: row.action_group_id,
+    actionGroupStep: row.action_group_step,
+    expiresAt: row.expires_at,
   };
 }
 
 const SELECT_COLS = `
   id, user_id, suggestion_id, action, platform, action_details, undo_payload,
-  executed_at, undone_at, created_at
+  executed_at, undo_status, undo_error, created_at, account_id, 
+  action_group_id, action_group_step, expires_at
 `;
 
 export interface StoreUndoActionInput {
@@ -52,6 +68,10 @@ export interface StoreUndoActionInput {
   platform: "google_drive" | "notion";
   actionDetails: Record<string, unknown>;
   undoPayload: Record<string, unknown>;
+  accountId?: string;
+  actionGroupId?: string;
+  actionGroupStep?: number;
+  expiresAt?: Date;
 }
 
 export async function storeUndoAction(
@@ -61,8 +81,9 @@ export async function storeUndoAction(
   return withUserTransaction(userId, async (client) => {
     const result = await client.query<UndoHistoryRow>(
       `insert into public.undo_history
-        (user_id, suggestion_id, action, platform, action_details, undo_payload)
-       values ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
+        (user_id, suggestion_id, action, platform, action_details, undo_payload,
+         account_id, action_group_id, action_group_step, expires_at)
+       values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10)
        returning ${SELECT_COLS}`,
       [
         userId,
@@ -71,6 +92,10 @@ export async function storeUndoAction(
         input.platform,
         JSON.stringify(input.actionDetails),
         JSON.stringify(input.undoPayload),
+        input.accountId ?? null,
+        input.actionGroupId ?? null,
+        input.actionGroupStep ?? null,
+        input.expiresAt ?? null,
       ],
     );
     return rowToAction(result.rows[0]);
@@ -93,7 +118,7 @@ export async function listUndoHistory(
   const params: unknown[] = [userId];
 
   if (!includeUndone) {
-    conditions.push("undone_at is null");
+    conditions.push("undo_status = 'available'");
   }
 
   const where = conditions.join(" and ");
@@ -138,7 +163,8 @@ export async function getUndoAction(
 }
 
 export interface MarkUndoneInput {
-  undoneAt?: string;
+  undoStatus?: "done" | "failed";
+  undoError?: string;
 }
 
 export async function markUndone(
@@ -147,17 +173,48 @@ export async function markUndone(
   input: MarkUndoneInput = {},
 ): Promise<UndoAction | null> {
   return withUserTransaction(userId, async (client) => {
-    const undoneAt = input.undoneAt ?? new Date().toISOString();
+    const undoStatus = input.undoStatus ?? "done";
 
     const result = await client.query<UndoHistoryRow>(
       `update public.undo_history
-       set undone_at = $3::timestamptz
+       set undo_status = $3, undo_error = $4
        where user_id = $1 and id = $2
        returning ${SELECT_COLS}`,
-      [userId, id, undoneAt],
+      [userId, id, undoStatus, input.undoError ?? null],
     );
 
     if (result.rowCount === 0) return null;
     return rowToAction(result.rows[0]);
+  });
+}
+
+export async function getUndoGroupByIdOrGroupId(
+  userId: string,
+  idOrGroupId: string,
+): Promise<UndoAction[]> {
+  return withUserTransaction(userId, async (client) => {
+    // First, try to find by action_group_id
+    let result = await client.query<UndoHistoryRow>(
+      `select ${SELECT_COLS}
+       from public.undo_history
+       where user_id = $1 and action_group_id = $2
+       order by action_group_step asc`,
+      [userId, idOrGroupId],
+    );
+
+    if ((result.rowCount ?? 0) > 0) {
+      return result.rows.map(rowToAction);
+    }
+
+    // Otherwise, try to find by entry id
+    result = await client.query<UndoHistoryRow>(
+      `select ${SELECT_COLS}
+       from public.undo_history
+       where user_id = $1 and id = $2`,
+      [userId, idOrGroupId],
+    );
+
+    if ((result.rowCount ?? 0) === 0) return [];
+    return [rowToAction(result.rows[0])];
   });
 }

@@ -1,5 +1,15 @@
-import { PlatformScanAdapter, ScannedFile, PlatformContentAdapter } from '../scanner/types.js';
-import { listGoogleDriveFiles, readGoogleDriveFileContent } from './service.js';
+import {
+  PlatformScanAdapter,
+  ScannedFile,
+  PlatformContentAdapter,
+  PlatformExecutionAdapter,
+} from '../scanner/types.js';
+import {
+  listGoogleDriveFiles,
+  readGoogleDriveFileContent,
+  readGoogleDriveFileMetadata,
+  trashGoogleDriveFile,
+} from './service.js';
 
 // MimeTypes that DriveSense can analyze for Google Drive
 const ALLOWED_GOOGLE_DRIVE_MIMETYPES = [
@@ -78,5 +88,135 @@ export class GoogleDriveContentAdapter implements PlatformContentAdapter {
     const result = await readGoogleDriveFileContent(userId, accountId, fileId);
     const buffer = Buffer.from(result.contentBase64, 'base64');
     return buffer.toString('utf-8');
+  }
+}
+
+/**
+ * Execution adapter for Google Drive to handle suggestion execution and undo operations.
+ * Bridges between the executor and Google Drive API, managing revisions and content updates.
+ */
+export class GoogleDriveExecutionAdapter implements PlatformExecutionAdapter {
+  readonly platform = 'google_drive';
+
+  async getFileMetadata(
+    userId: string,
+    accountId: string,
+    fileId: string,
+  ): Promise<ScannedFile | null> {
+    try {
+      const metadata = (await readGoogleDriveFileMetadata(userId, accountId, fileId)) as Record<
+        string,
+        unknown
+      >;
+      return {
+        id: metadata.id as string,
+        name: metadata.name as string,
+        mimeType: metadata.mimeType as string,
+        modifiedAt: metadata.modifiedTime as string,
+        sizeBytes: metadata.size ? parseInt(metadata.size as string, 10) : undefined,
+        platform: 'google_drive',
+        parentFolderIds: (metadata.parents as string[]) || [],
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async getFileContent(userId: string, accountId: string, fileId: string): Promise<string | null> {
+    try {
+      const result = await readGoogleDriveFileContent(userId, accountId, fileId);
+      const buffer = Buffer.from(result.contentBase64, 'base64');
+      return buffer.toString('utf-8');
+    } catch {
+      return null;
+    }
+  }
+
+  async executeArchive(
+    userId: string,
+    accountId: string,
+    fileId: string,
+  ): Promise<Record<string, unknown>> {
+    // Step: Trash the file
+    await trashGoogleDriveFile(userId, accountId, fileId);
+
+    // Return undo payload (fileId sufficient for untrash)
+    return {
+      fileId,
+    };
+  }
+
+  async executeRename(
+    userId: string,
+    accountId: string,
+    fileId: string,
+    newName: string,
+  ): Promise<Record<string, unknown>> {
+    // Get current name before rename
+    const metadata = (await readGoogleDriveFileMetadata(userId, accountId, fileId)) as Record<
+      string,
+      unknown
+    >;
+    const oldName = metadata.name as string;
+
+    // TODO: Implement Drive rename via PATCH /files/{fileId}
+    throw new Error('Drive rename executor not yet implemented');
+  }
+
+  async executeMerge(
+    userId: string,
+    accountId: string,
+    survivorId: string,
+    sourceId: string,
+  ): Promise<Array<{ payload: Record<string, unknown>; step?: number }>> {
+    // TODO: Implement Drive merge with revision pinning and content append
+    throw new Error('Drive merge executor not yet implemented');
+  }
+
+  async executeEdit(
+    userId: string,
+    accountId: string,
+    fileId: string,
+    newContent: string,
+  ): Promise<Record<string, unknown>> {
+    // TODO: Implement Drive edit with revision pinning and content upload
+    throw new Error('Drive edit executor not yet implemented');
+  }
+
+  async undoArchive(
+    userId: string,
+    accountId: string,
+    undoPayload: Record<string, unknown>,
+  ): Promise<boolean> {
+    // TODO: Implement Drive untrash operation
+    throw new Error('Drive undo archive not yet implemented');
+  }
+
+  async undoRename(
+    userId: string,
+    accountId: string,
+    undoPayload: Record<string, unknown>,
+  ): Promise<boolean> {
+    // TODO: Implement Drive rename to original name
+    throw new Error('Drive undo rename not yet implemented');
+  }
+
+  async undoMerge(
+    userId: string,
+    accountId: string,
+    undoPayload: Record<string, unknown>,
+    step?: number,
+  ): Promise<boolean> {
+    // TODO: Implement Drive merge undo (restore content from revision)
+    throw new Error('Drive undo merge not yet implemented');
+  }
+
+  async undoEdit(
+    userId: string,
+    accountId: string,
+    undoPayload: Record<string, unknown>,
+  ): Promise<boolean> {
+    // TODO: Implement Drive edit undo (restore content from pinned revision)
+    throw new Error('Drive undo edit not yet implemented');
   }
 }
