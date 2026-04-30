@@ -234,7 +234,7 @@ export class ProgressiveCrawlQueue {
   private extractParentIds(files: any[]): string[] {
     const parents = new Set<string>();
     for (const file of files) {
-      if (file.parentFolderIds && Array.isArray(file.parentFolderIds)) {
+      if (file.parentFolderIds && Array.isArray(file.parentFolderIds) && file.parentFolderIds.length > 0) {
         for (const parentId of file.parentFolderIds) {
           if (parentId && typeof parentId === 'string') {
             parents.add(parentId);

@@ -91,10 +91,17 @@ export async function updateSuggestionStatus(
   id: string,
   status: 'confirmed' | 'skipped' | 'dismissed',
   dismissedForever = false,
-): Promise<void> {
-  await request(`/suggestions/${id}/status`, {
+): Promise<{ undoRef?: string }> {
+  const data = await request<{ suggestion: Suggestion; undoRef?: string }>(`/suggestions/${id}/status`, {
     method: 'PATCH',
     body: JSON.stringify({ status, dismissedForever }),
+  });
+  return { undoRef: data.undoRef };
+}
+
+export async function undoAction(undoRef: string): Promise<void> {
+  await request(`/undo-history/${undoRef}/undo`, {
+    method: 'POST',
   });
 }
 

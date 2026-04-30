@@ -57,9 +57,11 @@
 ## Frontend & UX
 - [x] Settings panel (LLM selection, API key input, folder whitelist)
 - [x] Contextual suggestion popup/card with reason + confirm/skip/dismiss
+  - Phase 7 update: wired extension confirm -> background -> API flow and added inline undo toast for confirmed suggestions
 - [x] Suggestion queue list view for later review
 - [x] Rule editor interface
 - [x] Undo history viewer
+  - Phase 7 update: refreshed dashboard history from server after undo and grouped multi-step undo actions by `action_group_id` with current `undo_status`
 - [x] Browser extension scaffolding
 - [x] Web dashboard scaffolding (secondary)
 

@@ -13,6 +13,7 @@
 
 import { GoogleDriveExecutionAdapter } from "../google-drive/adapter.js";
 import { NotionExecutionAdapter } from "../notion/adapter.js";
+import type { EditPatch } from "../scanner/types.js";
 import { PlatformContext, UndoEntry } from "./executor.types.js";
 // ============================================================================
 // Errors
@@ -132,17 +133,41 @@ export async function executeMerge(
 export async function executeEdit(
   ctx: PlatformContext,
   fileId: string,
-  newContent: string,
+  editPatch: EditPatch,
 ): Promise<UndoEntry[]> {
   const adapter = getExecutionAdapter(ctx.platform);
-  const undoPayload = await adapter.executeEdit(ctx.userId, ctx.accountId, fileId, newContent);
+  const undoPayload = await adapter.executeEdit(ctx.userId, ctx.accountId, fileId, editPatch);
 
   return [
     {
       action: "edit",
       platform: ctx.platform,
-      actionDetails: { fileId, contentSize: newContent.length },
+      actionDetails: { fileId, updateCount: editPatch.content_updates.length },
       undoPayload,
     },
   ];
+}
+
+export async function executeUndo(
+  ctx: PlatformContext,
+  action: string,
+  undoPayload: Record<string, unknown>,
+  step?: number,
+): Promise<boolean> {
+  const adapter = getExecutionAdapter(ctx.platform);
+
+  if (action === "archive") {
+    return adapter.undoArchive(ctx.userId, ctx.accountId, undoPayload);
+  }
+  if (action === "rename") {
+    return adapter.undoRename(ctx.userId, ctx.accountId, undoPayload);
+  }
+  if (action === "merge") {
+    return adapter.undoMerge(ctx.userId, ctx.accountId, undoPayload, step);
+  }
+  if (action === "edit") {
+    return adapter.undoEdit(ctx.userId, ctx.accountId, undoPayload);
+  }
+
+  throw new Error(`Action '${action}' not supported for undo`);
 }

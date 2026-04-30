@@ -19,6 +19,7 @@ const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 const GOOGLE_OAUTH_BASE = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_DRIVE_API_BASE = "https://www.googleapis.com/drive/v3";
+const GOOGLE_DRIVE_UPLOAD_BASE = "https://www.googleapis.com/upload/drive/v3";
 
 interface GoogleTokenResponse {
   access_token: string;
@@ -256,6 +257,41 @@ async function driveRequest(
   return response;
 }
 
+async function driveRawRequest(
+  userId: string,
+  accountId: string,
+  url: URL,
+  options?: {
+    method?: string;
+    body?: BodyInit;
+    headers?: Record<string, string>;
+  },
+): Promise<Response> {
+  const runRequest = async (token: string): Promise<Response> => {
+    return fetch(url, {
+      method: options?.method ?? "GET",
+      headers: {
+        authorization: `Bearer ${token}`,
+        ...(options?.headers ?? {}),
+      },
+      body: options?.body,
+    });
+  };
+
+  let response = await runRequest(await getAccessToken(userId, accountId));
+  if ((response.status === 401 || response.status === 403) && (await getGoogleDriveConnection(userId, accountId))?.refreshToken) {
+    response = await runRequest(await getAccessToken(userId, accountId, { forceRefresh: true }));
+  }
+
+  if (!response.ok) {
+    const details = await parseGoogleError(response);
+    const statusCode = response.status === 401 || response.status === 403 ? 401 : 502;
+    throw new UpstreamApiError("Google Drive", details, statusCode);
+  }
+
+  return response;
+}
+
 function buildGoogleExportMimeType(mimeType: string): string {
   if (mimeType === "application/vnd.google-apps.document") {
     return "text/plain";
@@ -454,6 +490,86 @@ export async function readGoogleDriveFileContent(userId: string, accountId: stri
     encoding: "base64" as const,
     contentBase64: bytes.toString("base64"),
   };
+}
+
+export async function listGoogleDriveRevisions(userId: string, accountId: string, fileId: string) {
+  const response = await driveRequest(userId, accountId, `/files/${encodeURIComponent(fileId)}/revisions`, {
+    query: {
+      fields: "revisions(id, modifiedTime, keepForever), nextPageToken",
+      pageSize: 200,
+    },
+  });
+
+  return response.json() as Promise<{ revisions?: Array<{ id: string; modifiedTime?: string; keepForever?: boolean }> }>;
+}
+
+export async function updateGoogleDriveRevision(params: {
+  userId: string;
+  accountId: string;
+  fileId: string;
+  revisionId: string;
+  keepForever: boolean;
+}) {
+  const response = await driveRequest(
+    params.userId,
+    params.accountId,
+    `/files/${encodeURIComponent(params.fileId)}/revisions/${encodeURIComponent(params.revisionId)}`,
+    {
+      method: "PATCH",
+      body: { keepForever: params.keepForever },
+    },
+  );
+
+  return response.json();
+}
+
+export async function readGoogleDriveRevisionContent(
+  userId: string,
+  accountId: string,
+  fileId: string,
+  revisionId: string,
+): Promise<Buffer> {
+  const response = await driveRequest(
+    userId,
+    accountId,
+    `/files/${encodeURIComponent(fileId)}/revisions/${encodeURIComponent(revisionId)}`,
+    {
+      query: {
+        alt: "media",
+      },
+    },
+  );
+
+  return Buffer.from(await response.arrayBuffer());
+}
+
+export async function uploadGoogleDriveFileContent(params: {
+  userId: string;
+  accountId: string;
+  fileId: string;
+  content: string | Buffer;
+  contentType: string;
+}) {
+  const url = new URL(`/files/${encodeURIComponent(params.fileId)}`, GOOGLE_DRIVE_UPLOAD_BASE);
+  url.searchParams.set("uploadType", "media");
+  url.searchParams.set("supportsAllDrives", "true");
+
+  const bytes =
+    typeof params.content === "string"
+      ? Buffer.from(params.content, "utf-8")
+      : params.content;
+  const uploadBytes = new Uint8Array(new ArrayBuffer(bytes.byteLength));
+  uploadBytes.set(bytes);
+
+  const response = await driveRawRequest(params.userId, params.accountId, url, {
+    method: "PATCH",
+    headers: {
+      "content-type": params.contentType,
+    },
+    body: new Blob([uploadBytes], { type: params.contentType }),
+  });
+
+  return response.json();
 }
 
 export async function moveGoogleDriveFile(userId: string, accountId: string, fileId: string, folderId: string) {

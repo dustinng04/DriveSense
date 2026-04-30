@@ -392,6 +392,34 @@ export async function listNotionBlockChildren(params: {
   return response.json();
 }
 
+/**
+ * Search Notion workspace for pages.
+ * Used when scanning workspace root or when parent is workspace.
+ */
+export async function searchNotionPages(
+  userId: string,
+  accountId: string,
+  options?: {
+    pageSize?: number;
+  }
+): Promise<unknown> {
+  const body: Record<string, unknown> = {
+    filter: { property: 'object', value: 'page' },
+    sort: { direction: 'descending', timestamp: 'last_edited_time' },
+  };
+  
+  if (options?.pageSize) {
+    body.page_size = options.pageSize;
+  }
+  
+  const response = await notionRequest(userId, accountId, '/search', {
+    method: 'POST',
+    body,
+  });
+  
+  return response.json();
+}
+
 export async function readNotionPageMarkdown(
   userId: string,
   accountId: string,
@@ -405,4 +433,56 @@ export async function readNotionPageMarkdown(
 
   const data = (await response.json()) as { markdown?: string };
   return data.markdown ?? '';
+}
+
+export async function updateNotionPageMarkdown(params: {
+  userId: string;
+  accountId: string;
+  pageId: string;
+  contentUpdates: Array<{
+    old_str: string;
+    new_str: string;
+    replace_all_matches?: boolean;
+  }>;
+}) {
+  const response = await notionRequest(
+    params.userId,
+    params.accountId,
+    `/pages/${encodeURIComponent(params.pageId)}/markdown`,
+    {
+      method: "PATCH",
+      body: {
+        type: "update_content",
+        update_content: {
+          content_updates: params.contentUpdates,
+        },
+      },
+    },
+  );
+
+  return response.json();
+}
+
+export async function replaceNotionPageMarkdown(params: {
+  userId: string;
+  accountId: string;
+  pageId: string;
+  markdown: string;
+}) {
+  const response = await notionRequest(
+    params.userId,
+    params.accountId,
+    `/pages/${encodeURIComponent(params.pageId)}/markdown`,
+    {
+      method: "PATCH",
+      body: {
+        type: "replace_content",
+        replace_content: {
+          new_str: params.markdown,
+        },
+      },
+    },
+  );
+
+  return response.json();
 }

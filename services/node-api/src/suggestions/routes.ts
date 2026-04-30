@@ -12,12 +12,13 @@ import {
 import { PLATFORM_ACCOUNT_HEADER } from "../auth/platformAccount.js";
 import { executeArchive, executeRename, executeMerge, executeEdit } from "./executor.js";
 import { withUserTransaction } from "../db/withUserTransaction.js";
+import type { EditPatch } from "../scanner/types.js";
 
 interface AuthenticatedLocals {
   auth: AuthenticatedRequestContext;
 }
 
-const VALID_ACTIONS = ["archive", "merge", "rename", "review"] as const;
+const VALID_ACTIONS = ["archive", "merge", "rename", "review", "edit"] as const;
 const VALID_CONFIDENCE = ["high", "medium", "low"] as const;
 const VALID_STATUSES: SuggestionStatus[] = [
   "pending_enrichment",
@@ -44,6 +45,24 @@ function isValidPlatform(v: unknown): v is ReceiveSuggestionInput["platform"] {
   return VALID_PLATFORMS.includes(v as never);
 }
 
+function isEditPatch(v: unknown): v is EditPatch {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+
+  const patch = v as { version?: unknown; content_updates?: unknown };
+  if (patch.version !== 1 || !Array.isArray(patch.content_updates)) return false;
+
+  return patch.content_updates.every((op) => {
+    if (!op || typeof op !== "object" || Array.isArray(op)) return false;
+    const update = op as { old_str?: unknown; new_str?: unknown; replace_all_matches?: unknown };
+    return (
+      typeof update.old_str === "string" &&
+      update.old_str.length > 0 &&
+      typeof update.new_str === "string" &&
+      (update.replace_all_matches === undefined || typeof update.replace_all_matches === "boolean")
+    );
+  });
+}
+
 export const suggestionsRouter = Router();
 
 /** POST /suggestions — receive and store a new suggestion */
@@ -56,7 +75,7 @@ suggestionsRouter.post(
       return res.status(400).json({ error: "platform must be 'google_drive' or 'notion'" });
     }
     if (!isValidAction(action)) {
-      return res.status(400).json({ error: "action must be one of: archive, merge, rename, review" });
+      return res.status(400).json({ error: "action must be one of: archive, merge, rename, review, edit" });
     }
     if (typeof title !== "string" || !title.trim()) {
       return res.status(400).json({ error: "title is required" });
@@ -195,7 +214,7 @@ suggestionsRouter.patch(
           };
 
           // Extract action-specific parameters from request body
-          const { newName, newContent } = req.body ?? {};
+          const { newName } = req.body ?? {};
 
           // Execute appropriate action
           let undoEntries;
@@ -210,6 +229,14 @@ suggestionsRouter.patch(
             undoEntries = await executeRename(platformCtx, suggestion.fileIds[0], newName.trim());
           } else if (suggestion.action === "merge") {
             undoEntries = await executeMerge(platformCtx, suggestion.fileIds[0], suggestion.fileIds[1]);
+          } else if (suggestion.action === "edit") {
+            const editPatch = (suggestion.analysis as Record<string, unknown> | null | undefined)?.editPatch;
+            if (!isEditPatch(editPatch)) {
+              return res.status(409).json({
+                error: "edit action requires a valid stored editPatch in suggestion analysis",
+              });
+            }
+            undoEntries = await executeEdit(platformCtx, suggestion.fileIds[0], editPatch);
           } else if (suggestion.action === "review") {
             return res.status(400).json({
               error: "review action is not executable (user must act manually)",
@@ -256,7 +283,7 @@ suggestionsRouter.patch(
           return res.json({
             suggestion: updated,
             undoRef: undoEntries.length === 1
-              ? undefined // Will be populated by client with the entry ID
+              ? undoEntries[0].actionGroupId || suggestionId  // Single entry or use group ID if present
               : undoEntries[0].actionGroupId, // For grouped entries, use action_group_id
           });
         } catch (executorError) {

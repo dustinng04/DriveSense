@@ -21,6 +21,7 @@ import {
   fetchSessionMe,
   fetchFolderFiles,
   fetchParentFolderId,
+  undoAction,
 } from '../shared/api.js';
 import { BUILD_TIME_BEARER_TOKEN } from '../shared/buildConfig.js';
 import {
@@ -62,6 +63,32 @@ initSupabase();
 chrome.runtime.onInstalled.addListener(() => {
   initSupabase();
   void applyBuildTimeAuthTokenIfNeeded();
+});
+
+// Handle notification clicks for undo actions
+chrome.notifications.onClicked.addListener((notificationId) => {
+  if (notificationId.startsWith('undo_')) {
+    const undoRef = notificationId.replace('undo_', '');
+    void undoAction(undoRef).then(
+      () => {
+        chrome.notifications.clear(notificationId);
+        chrome.notifications.create({
+          type: 'basic',
+          iconUrl: chrome.runtime.getURL('icons/icon48.png'),
+          title: 'Action undone',
+          message: 'Your action has been reversed',
+        });
+      },
+      (error) => {
+        chrome.notifications.create({
+          type: 'basic',
+          iconUrl: chrome.runtime.getURL('icons/icon48.png'),
+          title: 'Undo failed',
+          message: error instanceof Error ? error.message : 'Failed to undo',
+        });
+      },
+    );
+  }
 });
 
 // Helper to subscribe to realtime suggestions
@@ -204,6 +231,58 @@ async function handlePendingEnrichment(suggestion: { id: string } & any): Promis
   }
 }
 
+// async function enrichSuggestionIfNeeded(suggestion: any): Promise<void> {
+//   if (suggestion.status !== 'pending_enrichment') return;
+//   if (enrichmentInFlight.has(suggestion.id)) return;
+
+//   enrichmentInFlight.add(suggestion.id);
+//   try {
+//     const { byokKeys } = await storageGet('byokKeys');
+//     const settings = await fetchSettings().catch(() => null);
+//     const provider = settings?.llmProvider;
+//     const apiKey = provider ? (byokKeys?.[provider] ?? '').trim() : '';
+
+//     if (!provider || !apiKey) {
+//       await patchSuggestionEnrichment(suggestion.id, {
+//         reason: suggestion.reason ?? null,
+//         confidence: (suggestion.confidence ?? 'medium') as any,
+//         analysis: { enrichment: { kind: 'byok_extension', skipped: true, reason: 'missing_byok_key_or_provider' } },
+//       });
+//       return;
+//     }
+
+//     let enrichment;
+//     if (suggestion.action === 'merge') {
+//       enrichment = await enrichSuggestionWithByok(suggestion, { provider, apiKey });
+//     } else if (suggestion.action === 'edit') {
+//       enrichment = await enrichEditSuggestionWithByok(suggestion, { provider, apiKey });
+//     } else {
+//       enrichment = null;
+//     }
+
+//     if (!enrichment) {
+//       await patchSuggestionEnrichment(suggestion.id, {
+//         reason: suggestion.reason ?? null,
+//         confidence: (suggestion.confidence ?? 'medium') as any,
+//         analysis: { enrichment: { kind: 'byok_extension', skipped: true, reason: 'unsupported_or_missing_analysis' } },
+//       });
+//       return;
+//     }
+
+//     const mergedReason = [suggestion.reason, `LLM note: ${enrichment.reason}`].filter(Boolean).join(' • ');
+
+//     await patchSuggestionEnrichment(suggestion.id, {
+//       reason: mergedReason || null,
+//       confidence: enrichment.confidence,
+//       analysis: enrichment.analysisPatch,
+//     });
+//   } catch (error) {
+//     console.debug(LOG_PREFIX, 'enrichment failed', error);
+//   } finally {
+//     enrichmentInFlight.delete(suggestion.id);
+//   }
+// }
+
 // ─── Alarm: periodic suggestion refresh ───────────────────────────────────────
 
 chrome.alarms.create(ALARM_NAME, {
@@ -313,6 +392,34 @@ async function handleMessage(message: BackgroundMessage): Promise<BackgroundResp
         return {
           type: 'ERROR',
           message: error instanceof Error ? error.message : 'Failed to dismiss',
+        };
+      }
+    }
+
+    case 'CONFIRM_SUGGESTION': {
+      try {
+        const { undoRef } = await updateSuggestionStatus(message.id, 'confirmed');
+        const current = await getPendingSuggestions();
+        const next = current.filter((s) => s.id !== message.id);
+        await setPendingSuggestions(next);
+        chrome.action.setBadgeText({ text: next.length > 0 ? String(next.length) : '' });
+        return { type: 'OK', undoRef };
+      } catch (error) {
+        return {
+          type: 'ERROR',
+          message: error instanceof Error ? error.message : 'Failed to confirm suggestion',
+        };
+      }
+    }
+
+    case 'UNDO_ACTION': {
+      try {
+        await undoAction(message.undoRef);
+        return { type: 'OK' };
+      } catch (error) {
+        return {
+          type: 'ERROR',
+          message: error instanceof Error ? error.message : 'Failed to undo action',
         };
       }
     }

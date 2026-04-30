@@ -9,8 +9,8 @@ export interface SuggestionCard {
   title: string;
   /** Plain-language explanation of why this action is recommended */
   description: string;
-  /** The action type: archive, merge, rename, or review */
-  action: 'archive' | 'merge' | 'rename' | 'review';
+  /** The action type: archive, merge, rename, edit, or review */
+  action: 'archive' | 'merge' | 'rename' | 'review' | 'edit';
   /** File IDs involved (typically 1 for archive/rename, 2+ for merge) */
   fileIds: string[];
   /** Confidence level: high, medium, or low */

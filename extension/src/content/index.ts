@@ -12,6 +12,7 @@ import type { BackgroundMessage, BackgroundResponse, OAuthAccountSummary, Platfo
 
 const LOG_PREFIX = '[DriveSense]';
 const OVERLAY_ID = 'drivesense-overlay';
+const TOAST_ID = 'drivesense-toast';
 
 // ─── Context detection ────────────────────────────────────────────────────────
 
@@ -54,9 +55,8 @@ function extractFileId(): string | undefined {
   // ID is a 32-character hex string at the end of the path; normalize to hyphenated UUID.
   const notionMatch = pathname.match(/(?:-|\/)([a-f0-9]{32})(?:\/|$)/i);
   if (notionMatch) {
-    // const h = notionMatch[1]!;
-    // return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
-    if (notionMatch) return notionMatch[1];
+    const h = notionMatch[1]!;
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
   }
 
   return undefined;
@@ -304,9 +304,16 @@ function buildOverlay(suggestion: Suggestion): HTMLElement {
         from { opacity: 0; transform: translateY(12px); }
         to   { opacity: 1; transform: translateY(0); }
       }
+      @keyframes ds-fade-up {
+        from { opacity: 0; transform: translateY(8px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
       #${OVERLAY_ID} button { cursor: pointer; border: none; background: none; font-family: inherit; font-size: 14px; transition: opacity 0.2s; }
       #${OVERLAY_ID} .ds-btn-primary { color: ${colors.accent}; font-weight: 600; border-bottom: 1px solid ${colors.accent}; padding: 2px 0; }
       #${OVERLAY_ID} .ds-btn-ghost { color: ${colors.secondary}; padding: 2px 0; }
+      #${TOAST_ID} button { cursor: pointer; border: none; background: none; font-family: inherit; font-size: 13px; }
+      #${TOAST_ID} .ds-toast-action { color: ${colors.accent}; font-weight: 600; border-bottom: 1px solid ${colors.accent}; padding: 0; }
+      #${TOAST_ID} .ds-toast-dismiss { color: ${colors.secondary}; opacity: 0.75; padding: 0; }
     `;
     document.head.appendChild(styleTag);
   }
@@ -356,6 +363,104 @@ function removeOverlay(): void {
   document.getElementById(OVERLAY_ID)?.remove();
 }
 
+function removeToast(): void {
+  document.getElementById(TOAST_ID)?.remove();
+}
+
+function buildToast(message: string, isError = false): HTMLElement {
+  const toast = document.createElement('div');
+  toast.id = TOAST_ID;
+
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const colors = {
+    bg: isDark ? '#221F1B' : '#F7F5F2',
+    text: isDark ? '#EDE9E3' : '#1C1A17',
+    secondary: isDark ? '#8C8278' : '#6B6560',
+    accent: isDark ? '#7BA394' : '#5C7A6E',
+    border: isDark ? '#2E2B26' : '#DDD9D3',
+    signal: isDark ? '#D4904A' : '#C47B3A',
+  };
+
+  toast.style.cssText = `
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 2147483647;
+    min-width: 260px;
+    max-width: 340px;
+    background: ${colors.bg};
+    border: 1px solid ${isError ? colors.signal : colors.border};
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    color: ${colors.text};
+    padding: 14px 16px;
+    animation: ds-fade-up 0.24s ease-out;
+  `;
+
+  toast.innerHTML = `
+    <div style="display:flex; gap:12px; align-items:flex-start;">
+      <div style="flex:1; min-width:0;">
+        <p style="margin:0; font-size:14px; line-height:1.45; color:${colors.text};">${escapeHtml(message)}</p>
+      </div>
+      <button id="ds-toast-dismiss" class="ds-toast-dismiss" aria-label="Dismiss">×</button>
+    </div>
+  `;
+
+  return toast;
+}
+
+function showErrorToast(message: string): void {
+  removeToast();
+  const toast = buildToast(message, true);
+  document.body.appendChild(toast);
+  toast.querySelector('#ds-toast-dismiss')?.addEventListener('click', removeToast);
+  window.setTimeout(removeToast, 5000);
+}
+
+function showUndoToast(undoRef: string): void {
+  removeToast();
+  const toast = buildToast('Done.');
+  const body = toast.querySelector('div');
+  if (body) {
+    body.innerHTML = `
+      <div style="flex:1; min-width:0;">
+        <p style="margin:0; font-size:14px; line-height:1.45;">Done.</p>
+        <div style="display:flex; gap:12px; align-items:center; margin-top:8px;">
+          <button id="ds-toast-undo" class="ds-toast-action">Undo</button>
+        </div>
+      </div>
+      <button id="ds-toast-dismiss" class="ds-toast-dismiss" aria-label="Dismiss">×</button>
+    `;
+  }
+
+  document.body.appendChild(toast);
+
+  const timer = window.setTimeout(removeToast, 8000);
+  toast.querySelector('#ds-toast-dismiss')?.addEventListener('click', () => {
+    window.clearTimeout(timer);
+    removeToast();
+  });
+
+  toast.querySelector('#ds-toast-undo')?.addEventListener('click', async () => {
+    try {
+      const response = await sendMessage({ type: 'UNDO_ACTION', undoRef });
+      if (response.type === 'ERROR') {
+        throw new Error(response.message);
+      }
+      window.clearTimeout(timer);
+      removeToast();
+      const confirmation = buildToast('Action reversed.');
+      document.body.appendChild(confirmation);
+      confirmation.querySelector('#ds-toast-dismiss')?.addEventListener('click', removeToast);
+      window.setTimeout(removeToast, 4000);
+    } catch (error) {
+      window.clearTimeout(timer);
+      showErrorToast(error instanceof Error ? error.message : 'Failed to undo action.');
+    }
+  });
+}
+
 async function showSuggestion(suggestion: Suggestion): Promise<void> {
   removeOverlay(); // remove any stale one
   const overlay = buildOverlay(suggestion);
@@ -368,7 +473,18 @@ async function showSuggestion(suggestion: Suggestion): Promise<void> {
 
   overlay.querySelector('#ds-confirm')?.addEventListener('click', async () => {
     removeOverlay();
-    await sendMessage({ type: 'DISMISS_SUGGESTION', id: suggestion.id }).catch(console.error);
+    try {
+      const response = await sendMessage({ type: 'CONFIRM_SUGGESTION', id: suggestion.id });
+      if (response.type === 'ERROR') {
+        throw new Error(response.message);
+      }
+      if (response.type === 'OK' && response.undoRef) {
+        showUndoToast(response.undoRef);
+      }
+    } catch (error) {
+      console.error(LOG_PREFIX, 'Failed to confirm suggestion', error);
+      showErrorToast(error instanceof Error ? error.message : 'Failed to confirm suggestion.');
+    }
   });
 
   overlay.querySelector('#ds-skip')?.addEventListener('click', () => {

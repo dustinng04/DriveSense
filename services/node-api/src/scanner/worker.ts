@@ -1,5 +1,4 @@
 /**
- * Async worker for cross-folder scan analysis.
  * Processes metadata duplicates and inserts suggestions into Supabase.
  * Runs asynchronously to avoid blocking the HTTP response.
  */
@@ -50,16 +49,36 @@ function pairToSuggestionInput(
   const relationship = options?.relationship;
   const jaccard = typeof options?.jaccardScore === "number" ? options.jaccardScore : null;
 
+  // Use 'edit' action for subset relationships (one file contains the other)
+  const isSubset = relationship === 'subset';
+  const action = isSubset ? 'edit' : 'merge';
+
+  // For subset: longer file is target, shorter is reference
+  let targetFile = pair.candidate;
+  let referenceFile = pair.match;
+  let targetContent = options?.contentA ?? null;
+  let referenceContent = options?.contentB ?? null;
+
+  if (isSubset && pair.match.sizeBytes && pair.candidate.sizeBytes && pair.match.sizeBytes > pair.candidate.sizeBytes) {
+    // Swap if match is larger
+    targetFile = pair.match;
+    referenceFile = pair.candidate;
+    targetContent = options?.contentB ?? null;
+    referenceContent = options?.contentA ?? null;
+  }
+
   return {
     platform,
-    action: 'merge',
+    action,
     status: "pending_enrichment",
-    title: 'Possible duplicate in another folder',
-    description: `Found "${pair.match.name}" in a different folder with ${similarity}% metadata match${
-      relationship ? ` (${relationship})` : ""
-    }. Consider merging with "${pair.candidate.name}".`,
+    title: isSubset ? 'Remove duplicate content' : 'Possible duplicate in another folder',
+    description: isSubset
+      ? `"${targetFile.name}" contains duplicate content from "${referenceFile.name}". Consider removing redundant sections.`
+      : `Found "${pair.match.name}" in a different folder with ${similarity}% metadata match${
+          relationship ? ` (${relationship})` : ""
+        }. Consider merging with "${pair.candidate.name}".`,
     confidence,
-    fileIds: [pair.candidate.id, pair.match.id],
+    fileIds: isSubset ? [targetFile.id] : [pair.candidate.id, pair.match.id],
     reason: [
       `Metadata match: name=${Math.round(pair.nameSimilarity * 100)}%, size=${Math.round(pair.sizeSimilarity * 100)}%`,
       jaccard !== null ? `Text similarity (Jaccard): ${Math.round(jaccard * 100)}%` : null,
@@ -75,22 +94,40 @@ function pairToSuggestionInput(
       content: jaccard !== null ? { jaccardScore: jaccard } : undefined,
       relationship: relationship ?? undefined,
       combinedScore: combined,
-      files: {
-        candidate: {
-          id: pair.candidate.id,
-          name: pair.candidate.name,
-          mimeType: pair.candidate.mimeType,
-        },
-        match: {
-          id: pair.match.id,
-          name: pair.match.name,
-          mimeType: pair.match.mimeType,
-        },
-      },
-      contentPreview: {
-        candidate: options?.contentA ?? null,
-        match: options?.contentB ?? null,
-      },
+      files: isSubset
+        ? {
+            target: {
+              id: targetFile.id,
+              name: targetFile.name,
+              mimeType: targetFile.mimeType,
+            },
+            reference: {
+              id: referenceFile.id,
+              name: referenceFile.name,
+              mimeType: referenceFile.mimeType,
+            },
+          }
+        : {
+            candidate: {
+              id: pair.candidate.id,
+              name: pair.candidate.name,
+              mimeType: pair.candidate.mimeType,
+            },
+            match: {
+              id: pair.match.id,
+              name: pair.match.name,
+              mimeType: pair.match.mimeType,
+            },
+          },
+      contentPreview: isSubset
+        ? {
+            target: targetContent,
+            reference: referenceContent,
+          }
+        : {
+            candidate: options?.contentA ?? null,
+            match: options?.contentB ?? null,
+          },
       enrichment: { kind: "byok_extension" },
     },
   };

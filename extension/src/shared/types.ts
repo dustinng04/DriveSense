@@ -15,7 +15,7 @@ export interface OAuthAccountSummary {
   isPrimary: boolean;
 }
 export type Provider = 'gemini' | 'openai' | 'anthropic' | 'glm';
-export type SuggestionAction = 'archive' | 'merge' | 'rename' | 'review';
+export type SuggestionAction = 'archive' | 'merge' | 'rename' | 'review' | 'edit';
 export type SuggestionStatus = 'pending_enrichment' | 'pending' | 'confirmed' | 'skipped' | 'dismissed';
 export type Confidence = 'high' | 'medium' | 'low';
 
@@ -76,7 +76,12 @@ export interface UndoAction {
   actionDetails: Record<string, unknown>;
   undoPayload: Record<string, unknown>;
   executedAt: string;
-  undoneAt: string | null;
+  undoStatus: 'available' | 'expired' | 'failed' | 'done';
+  undoError?: string;
+  accountId?: string;
+  actionGroupId?: string;
+  actionGroupStep?: number;
+  expiresAt?: string;
 }
 
 // --- Local Metadata Index ---
@@ -170,11 +175,13 @@ export type BackgroundMessage =
   | { type: 'GET_BYOK_KEY'; provider: Provider }
   | { type: 'GET_PENDING_COUNT' }
   | { type: 'DISMISS_SUGGESTION'; id: string }
+  | { type: 'CONFIRM_SUGGESTION'; id: string; newName?: string }
+  | { type: 'UNDO_ACTION'; undoRef: string }
   | { type: 'PING' };
 
 export type BackgroundResponse =
   | { type: 'BYOK_KEY'; key: string }
   | { type: 'PENDING_COUNT'; count: number }
   | { type: 'SUGGESTIONS'; suggestions: Suggestion[] }
-  | { type: 'OK' }
+  | { type: 'OK'; undoRef?: string }
   | { type: 'ERROR'; message: string };

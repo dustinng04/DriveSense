@@ -3,12 +3,17 @@ import {
   ScannedFile,
   PlatformContentAdapter,
   PlatformExecutionAdapter,
+  EditPatch,
 } from '../scanner/types.js';
+import { applyOpsLocally } from '../suggestions/editPatch.js';
 import {
   listNotionBlockChildren,
   readNotionPage,
   readNotionPageMarkdown,
+  replaceNotionPageMarkdown,
+  updateNotionPageMarkdown,
   updateNotionPage,
+  searchNotionPages,
 } from './service.js';
 
 /**
@@ -29,34 +34,54 @@ export class NotionScanAdapter implements PlatformScanAdapter {
     maxFiles: number,
   ): Promise<ScannedFile[]> {
     const files: ScannedFile[] = [];
+    let isWorkspaceRoot = false;
 
     // Try to get the resource itself (page or database metadata)
     try {
       const resource = await readNotionPage(userId, accountId, resourceId);
       if (resource) {
+        if (resource.parent?.type === 'workspace') {
+          isWorkspaceRoot = true;
+        }
         files.push(this.mapNotionPage(resource));
       }
     } catch (err) {
-      // Ignore - might not be a valid page/database or permission issue
       console.debug('[NotionScanAdapter] Could not read resource itself:', err);
     }
 
-    // Get children (child_page and child_database blocks)
-    try {
-      const blockResult = await listNotionBlockChildren({
-        userId,
-        accountId,
-        blockId: resourceId,
-        pageSize: maxFiles,
-      });
+    // If workspace root, use search API instead of block children
+    if (isWorkspaceRoot) {
+      try {
+        const searchResult = await searchNotionPages(userId, accountId, {
+          pageSize: maxFiles,
+        }) as any;
+        
+        const pages = (searchResult.results || [])
+          .filter((item: any) => item.object === 'page')
+          .map((item: any) => this.mapNotionPage(item));
+        
+        files.push(...pages);
+      } catch (err) {
+        console.debug('[NotionScanAdapter] Could not search workspace:', err);
+      }
+    } else {
+      // Get children (child_page and child_database blocks)
+      try {
+        const blockResult = await listNotionBlockChildren({
+          userId,
+          accountId,
+          blockId: resourceId,
+          pageSize: maxFiles,
+        }) as any;
 
-      const childPages = (blockResult.results || [])
-        .filter((block: any) => block.type === 'child_page' || block.type === 'child_database')
-        .map((block: any) => this.mapNotionBlock(block));
+        const childPages = (blockResult.results || [])
+          .filter((block: any) => block.type === 'child_page' || block.type === 'child_database')
+          .map((block: any) => this.mapNotionBlock(block));
 
-      files.push(...childPages);
-    } catch (err) {
-      console.debug('[NotionScanAdapter] Could not list children:', err);
+        files.push(...childPages);
+      } catch (err) {
+        console.debug('[NotionScanAdapter] Could not list children:', err);
+      }
     }
 
     // Dedupe by ID (in case resource itself is also in children)
@@ -231,10 +256,33 @@ export class NotionExecutionAdapter implements PlatformExecutionAdapter {
     userId: string,
     accountId: string,
     pageId: string,
-    newContent: string,
+    editPatch: EditPatch,
   ): Promise<Record<string, unknown>> {
-    // TODO: Implement Notion edit with block patching
-    throw new Error('Notion edit executor not yet implemented');
+    const previousMarkdown = await readNotionPageMarkdown(userId, accountId, pageId);
+    const applied = applyOpsLocally(previousMarkdown, editPatch);
+
+    if (applied.appliedUpdates.length > 0) {
+      const result = await updateNotionPageMarkdown({
+        userId,
+        accountId,
+        pageId,
+        contentUpdates: applied.appliedUpdates,
+      }) as Record<string, unknown>;
+
+      if (result.truncated === true || Array.isArray(result.unknown_block_ids)) {
+        throw new Error('Notion markdown update returned truncated content; edit was not considered safe');
+      }
+    }
+
+    return {
+      platform: 'notion',
+      strategy: 'replace_content',
+      pageId,
+      previousMarkdown,
+      outcome: applied.outcome,
+      appliedCount: applied.appliedUpdates.length,
+      skippedUpdates: applied.skippedUpdates,
+    };
   }
 
   async undoArchive(
@@ -270,8 +318,26 @@ export class NotionExecutionAdapter implements PlatformExecutionAdapter {
     accountId: string,
     undoPayload: Record<string, unknown>,
   ): Promise<boolean> {
-    // TODO: Implement Notion edit undo (restore block content)
-    throw new Error('Notion undo edit not yet implemented');
+    const pageId = typeof undoPayload.pageId === 'string' ? undoPayload.pageId : '';
+    const previousMarkdown =
+      typeof undoPayload.previousMarkdown === 'string' ? undoPayload.previousMarkdown : '';
+
+    if (!pageId || !previousMarkdown) {
+      throw new Error('Invalid Notion edit undo payload');
+    }
+
+    const result = await replaceNotionPageMarkdown({
+      userId,
+      accountId,
+      pageId,
+      markdown: previousMarkdown,
+    }) as Record<string, unknown>;
+
+    if (result.truncated === true || Array.isArray(result.unknown_block_ids)) {
+      throw new Error('Notion markdown restore returned truncated content');
+    }
+
+    return true;
   }
 
   // ============================================================

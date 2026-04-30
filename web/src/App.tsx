@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 import { SuggestionCard, type Suggestion } from "./components/SuggestionCard";
 import { PageHeader } from "./components/PageHeader";
@@ -18,12 +18,53 @@ interface FolderBlacklistRule { type: "folder_blacklist"; path: string; platform
 interface FiletypeWhitelistRule { type: "filetype_whitelist"; allowed_types: string[]; }
 interface KeywordGuardRule { type: "keyword_guard"; keywords: string[]; }
 type Rule = FolderWhitelistRule | FolderBlacklistRule | FiletypeWhitelistRule | KeywordGuardRule;
-interface UndoAction { id: string; suggestionId: string | null; action: string; platform: Platform; actionDetails: Record<string, unknown>; undoPayload: Record<string, unknown>; executedAt: string; undoneAt: string | null; }
+interface UndoAction {
+  id: string;
+  suggestionId: string | null;
+  action: string;
+  platform: Platform;
+  actionDetails: Record<string, unknown>;
+  undoPayload: Record<string, unknown>;
+  executedAt: string;
+  undoStatus: "available" | "expired" | "failed" | "done";
+  undoError?: string;
+  accountId?: string;
+  actionGroupId?: string;
+  actionGroupStep?: number;
+  expiresAt?: string;
+}
 interface ProviderKeys { gemini: string; openai: string; anthropic: string; glm: string; }
+interface UndoHistoryGroup {
+  undoRef: string;
+  entries: UndoAction[];
+  primaryEntry: UndoAction;
+}
 
 const EMPTY_KEYS: ProviderKeys = { gemini: "", openai: "", anthropic: "", glm: "" };
 
 function readToken() { return localStorage.getItem(TOKEN_KEY) ?? ""; }
+
+function getOauthSuccessInfo(): { newToken: string | null; isLinked: boolean } | null {
+  if (typeof window === "undefined" || window.location.pathname !== "/oauth-success") return null;
+  const params = new URLSearchParams(window.location.search);
+  const newToken = params.get("token");
+  const isLinked = params.get("notionConnected") === "true" || params.get("googleDriveConnected") === "true";
+  if (!newToken && !isLinked) return null;
+  return { newToken, isLinked };
+}
+
+function readInitialToken(): string {
+  const oauth = getOauthSuccessInfo();
+  if (oauth?.newToken) return oauth.newToken;
+  return readToken();
+}
+
+function readInitialStatus(): string {
+  const oauth = getOauthSuccessInfo();
+  if (oauth?.newToken) return "Login Successful. You can close this tab.";
+  if (oauth?.isLinked) return "Account linked successfully. You can close this tab.";
+  return "Ready";
+}
 
 /** When the dashboard is opened in Chrome and VITE_DS_EXTENSION_ID is set, push the token into the extension. */
 function pushTokenToExtension(tokenValue: string): void {
@@ -58,14 +99,75 @@ function statusType(msg: string): "success" | "error" | "default" {
   return "default";
 }
 
+function groupUndoHistory(history: UndoAction[]): UndoHistoryGroup[] {
+  const groups = new Map<string, UndoAction[]>();
+
+  for (const entry of history) {
+    const key = entry.actionGroupId ?? entry.id;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.push(entry);
+    } else {
+      groups.set(key, [entry]);
+    }
+  }
+
+  return [...groups.entries()]
+    .map(([undoRef, entries]) => ({
+      undoRef,
+      entries: [...entries].sort((a, b) => (a.actionGroupStep ?? 0) - (b.actionGroupStep ?? 0)),
+      primaryEntry: [...entries].sort((a, b) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime())[0]!,
+    }))
+    .sort((a, b) => new Date(b.primaryEntry.executedAt).getTime() - new Date(a.primaryEntry.executedAt).getTime());
+}
+
+function getUndoGroupStatus(entries: UndoAction[]): UndoAction["undoStatus"] {
+  if (entries.some((entry) => entry.undoStatus === "failed")) return "failed";
+  if (entries.every((entry) => entry.undoStatus === "done")) return "done";
+  if (entries.every((entry) => entry.undoStatus === "expired")) return "expired";
+  return "available";
+}
+
+function formatPlatform(platform: Platform): string {
+  return platform === "google_drive" ? "Google Drive" : "Notion";
+}
+
+function formatActionLabel(action: string): string {
+  return action.replace(/_/g, " ");
+}
+
+function summarizeActionDetails(actionDetails: Record<string, unknown>): string {
+  const candidateKeys = ["newName", "fileId", "survivorFileId", "sourceFileId", "updateCount"];
+
+  for (const key of candidateKeys) {
+    const value = actionDetails[key];
+    if (typeof value === "string" && value.trim()) return `${key}: ${value}`;
+    if (typeof value === "number") return `${key}: ${value}`;
+  }
+
+  const firstEntry = Object.entries(actionDetails).find(([, value]) => {
+    return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+  });
+
+  if (!firstEntry) return "No details available";
+  return `${firstEntry[0]}: ${String(firstEntry[1])}`;
+}
+
+function formatUndoStatus(status: UndoAction["undoStatus"]): string {
+  if (status === "done") return "Undone";
+  if (status === "expired") return "Undo window closed";
+  if (status === "failed") return "Needs retry";
+  return "Available";
+}
+
 export default function App() {
   const [tab, setTab] = useState("suggestions");
-  const [token, setToken] = useState(readToken);
-  const [tokenInput, setTokenInput] = useState(readToken);
+  const [token, setToken] = useState(readInitialToken);
+  const [tokenInput, setTokenInput] = useState(readInitialToken);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [rules, setRules] = useState<Rule[]>([]);
   const [keys, setKeys] = useState<ProviderKeys>(readKeys);
-  const [status, setStatus] = useState("Ready");
+  const [status, setStatus] = useState(readInitialStatus);
   const [loading, setLoading] = useState(false);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [undoHistory, setUndoHistory] = useState<UndoAction[]>([]);
@@ -91,6 +193,11 @@ export default function App() {
     try { await fn(); } catch (e) { setStatus(e instanceof Error ? e.message : "Error"); } finally { setLoading(false); }
   }
 
+  async function loadUndoHistory() {
+    const response = await req<{ actions: UndoAction[] }>("/undo-history?limit=50&includeUndone=true");
+    setUndoHistory(response.actions ?? []);
+  }
+
   async function loadData() {
     await run("Still looking…", async () => {
       const [s, r, sg, u] = await Promise.all([
@@ -112,37 +219,29 @@ export default function App() {
         try {
           const { authUrl } = await req<{ authUrl: string }>(`/${connectPlatform.replace("_", "-")}/oauth/start`);
           window.location.href = authUrl;
-        } catch (e) {
+        } catch {
           setStatus(`Failed to start ${connectPlatform} connection`);
         }
       }
     });
   }
 
-  // Handle direct OAuth login & link success
-  useMemo(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (window.location.pathname === "/oauth-success") {
-      const newToken = params.get("token");
-      const isLinked = params.get("notionConnected") === "true" || params.get("googleDriveConnected") === "true";
-      
-      if (newToken) {
-        localStorage.setItem(TOKEN_KEY, newToken);
-        setToken(newToken);
-        setTokenInput(newToken);
-        pushTokenToExtension(newToken);
-        setStatus("Login Successful. You can close this tab.");
-      } else if (isLinked) {
-        setStatus("Account linked successfully. You can close this tab.");
-      }
+  // Handle direct OAuth login & link success — token/status are seeded by
+  // useState initializers above; this effect only performs side effects.
+  useEffect(() => {
+    const oauth = getOauthSuccessInfo();
+    if (!oauth) return;
 
-      if (newToken || isLinked) {
-        window.history.replaceState({}, "", "/");
-        setTimeout(() => {
-          try { window.close(); } catch (e) {}
-        }, 1500);
-      }
+    if (oauth.newToken) {
+      localStorage.setItem(TOKEN_KEY, oauth.newToken);
+      pushTokenToExtension(oauth.newToken);
     }
+
+    window.history.replaceState({}, "", "/");
+    const timer = setTimeout(() => {
+      try { window.close(); } catch { /* tab may not be script-closable */ }
+    }, 1500);
+    return () => clearTimeout(timer);
   }, []);
 
   async function saveRules(next: Rule[], msg: string) {
@@ -162,7 +261,7 @@ export default function App() {
   async function performUndo(id: string) {
     await run("Reversing…", async () => {
       await req(`/undo-history/${id}/undo`, { method: "POST" });
-      setUndoHistory(c => c.map(a => a.id === id ? { ...a, undoneAt: new Date().toISOString() } : a));
+      await loadUndoHistory();
       setStatus("Action reversed successfully");
     });
   }
@@ -330,30 +429,65 @@ function RulesPage({ rules, loading, token, whitelistEntries, blacklistEntries, 
 // ─── Undo History page ───────────────────────────────────────────────────────
 
 function HistoryPage({ history, loading, onUndo }: { history: UndoAction[]; loading: boolean; onUndo: (id: string) => Promise<void> }) {
+  const groups = useMemo(() => groupUndoHistory(history), [history]);
+
   return (
     <>
-      <PageHeader title="Undo History" description="All confirmed actions — fully reversible, one click." />
-      {history.length === 0
+      <PageHeader title="Undo History" description="Recent confirmed actions, grouped by operation and refreshed from the server after each undo." />
+      {groups.length === 0
         ? <div className="empty-state"><div className="empty-state-icon">📋</div><p>No history yet. Load data to see recent actions.</p></div>
         : <div className="item-list">
-            {history.map(a => (
-              <div key={a.id} className={`undo-item${a.undoneAt ? " undone" : ""}`}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-                    <span className="undo-action-badge">{a.action}</span>
-                    <span style={{ fontSize: "12px", color: "var(--text-3)" }}>{a.platform}</span>
+            {groups.map((group) => {
+              const status = getUndoGroupStatus(group.entries);
+              const canUndo = status === "available" || status === "failed";
+              const expiry = group.entries
+                .map((entry) => entry.expiresAt)
+                .filter((value): value is string => Boolean(value))
+                .sort()[0];
+
+              return (
+                <div key={group.undoRef} className={`undo-item status-${status}`}>
+                  <div className="undo-header">
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="undo-title-row">
+                        <span className="undo-action-badge">{formatActionLabel(group.primaryEntry.action)}</span>
+                        <span className="undo-platform-label">{formatPlatform(group.primaryEntry.platform)}</span>
+                        {group.entries.length > 1 ? <span className="undo-step-count">{group.entries.length} steps</span> : null}
+                        <span className={`undo-status-pill status-${status}`}>{formatUndoStatus(status)}</span>
+                      </div>
+                      <div className="undo-meta">Executed {new Date(group.primaryEntry.executedAt).toLocaleString()}</div>
+                      {expiry ? <div className="undo-meta">Expires {new Date(expiry).toLocaleString()}</div> : null}
+                    </div>
+                    <div style={{ flexShrink: 0 }}>
+                      <button
+                        id={`undo-${group.undoRef}`}
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => onUndo(group.undoRef)}
+                        disabled={loading || !canUndo}
+                      >
+                        ↩ Undo
+                      </button>
+                    </div>
                   </div>
-                  <div className="undo-meta">Executed {new Date(a.executedAt).toLocaleString()}</div>
-                  <pre className="undo-details">{JSON.stringify(a.actionDetails, null, 2)}</pre>
+
+                  <div className="undo-group-list">
+                    {group.entries.map((entry) => (
+                      <div key={entry.id} className="undo-group-entry">
+                        <div className="undo-group-entry-header">
+                          <span className="undo-entry-label">
+                            {group.entries.length > 1 ? `Step ${entry.actionGroupStep ?? 1}` : "Action"}
+                          </span>
+                          <span className={`undo-entry-state status-${entry.undoStatus}`}>{formatUndoStatus(entry.undoStatus)}</span>
+                        </div>
+                        <div className="undo-meta">{summarizeActionDetails(entry.actionDetails)}</div>
+                        {entry.undoError ? <div className="undo-error">{entry.undoError}</div> : null}
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div style={{ flexShrink: 0 }}>
-                  {a.undoneAt
-                    ? <span className="undone-label">✓ Undone {new Date(a.undoneAt).toLocaleDateString()}</span>
-                    : <button id={`undo-${a.id}`} type="button" className="btn btn-ghost btn-sm" onClick={() => onUndo(a.id)} disabled={loading}>↩ Undo</button>
-                  }
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
       }
     </>

@@ -122,6 +122,17 @@ export interface PlatformContentAdapter {
   ): Promise<string | null>;
 }
 
+export interface ContentUpdate {
+  old_str: string;
+  new_str: string;
+  replace_all_matches?: boolean;
+}
+
+export interface EditPatch {
+  version: 1;
+  content_updates: ContentUpdate[];
+}
+
 /**
  * Platform adapter for file management operations (execution & undo).
  * Each platform (Drive, Notion, …) implements these for suggestion execution.
@@ -214,14 +225,14 @@ export interface PlatformExecutionAdapter {
    * @param userId    - DriveSense user ID
    * @param accountId - Platform account ID
    * @param fileId    - Platform file ID
-   * @param newContent - New file content (plain text)
+   * @param editPatch - Ordered literal content update operations
    * @returns Undo payload (revision id, old content, etc.)
    */
   executeEdit(
     userId: string,
     accountId: string,
     fileId: string,
-    newContent: string
+    editPatch: EditPatch
   ): Promise<Record<string, unknown>>;
 
   // ============================================================

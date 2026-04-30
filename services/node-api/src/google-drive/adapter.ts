@@ -3,12 +3,18 @@ import {
   ScannedFile,
   PlatformContentAdapter,
   PlatformExecutionAdapter,
+  EditPatch,
 } from '../scanner/types.js';
+import { applyOpsLocally } from '../suggestions/editPatch.js';
 import {
+  listGoogleDriveRevisions,
   listGoogleDriveFiles,
   readGoogleDriveFileContent,
   readGoogleDriveFileMetadata,
+  readGoogleDriveRevisionContent,
   trashGoogleDriveFile,
+  updateGoogleDriveRevision,
+  uploadGoogleDriveFileContent,
 } from './service.js';
 
 // MimeTypes that DriveSense can analyze for Google Drive
@@ -177,10 +183,61 @@ export class GoogleDriveExecutionAdapter implements PlatformExecutionAdapter {
     userId: string,
     accountId: string,
     fileId: string,
-    newContent: string,
+    editPatch: EditPatch,
   ): Promise<Record<string, unknown>> {
-    // TODO: Implement Drive edit with revision pinning and content upload
-    throw new Error('Drive edit executor not yet implemented');
+    const metadata = (await readGoogleDriveFileMetadata(userId, accountId, fileId)) as {
+      mimeType: string;
+      name: string;
+    };
+
+    if (metadata.mimeType === 'application/vnd.google-apps.document') {
+      throw new Error('Drive edit is blocked for native Google Docs in MVP to avoid losing formatting');
+    }
+    if (metadata.mimeType.startsWith('application/vnd.google-apps')) {
+      throw new Error(`Drive edit is not supported for native Google Workspace type ${metadata.mimeType}`);
+    }
+    if (!this.isEditableBlobMimeType(metadata.mimeType)) {
+      throw new Error(`Drive edit is not supported for ${metadata.mimeType}`);
+    }
+
+    const current = await readGoogleDriveFileContent(userId, accountId, fileId);
+    const previousContent = Buffer.from(current.contentBase64, 'base64').toString('utf-8');
+    const applied = applyOpsLocally(previousContent, editPatch);
+
+    const revisions = await listGoogleDriveRevisions(userId, accountId, fileId);
+    const previousRevisionId = revisions.revisions?.at(-1)?.id;
+    if (!previousRevisionId) {
+      throw new Error('Drive edit could not identify the current revision');
+    }
+
+    if (applied.appliedUpdates.length > 0) {
+      await uploadGoogleDriveFileContent({
+        userId,
+        accountId,
+        fileId,
+        content: applied.content,
+        contentType: current.contentType || metadata.mimeType,
+      });
+
+      await updateGoogleDriveRevision({
+        userId,
+        accountId,
+        fileId,
+        revisionId: previousRevisionId,
+        keepForever: true,
+      });
+    }
+
+    return {
+      platform: 'drive',
+      strategy: 'revision',
+      fileId,
+      revisionId: previousRevisionId,
+      keepForever: applied.appliedUpdates.length > 0,
+      outcome: applied.outcome,
+      appliedCount: applied.appliedUpdates.length,
+      skippedUpdates: applied.skippedUpdates,
+    };
   }
 
   async undoArchive(
@@ -216,7 +273,39 @@ export class GoogleDriveExecutionAdapter implements PlatformExecutionAdapter {
     accountId: string,
     undoPayload: Record<string, unknown>,
   ): Promise<boolean> {
-    // TODO: Implement Drive edit undo (restore content from pinned revision)
-    throw new Error('Drive undo edit not yet implemented');
+    const fileId = typeof undoPayload.fileId === 'string' ? undoPayload.fileId : '';
+    const revisionId = typeof undoPayload.revisionId === 'string' ? undoPayload.revisionId : '';
+    if (!fileId || !revisionId) {
+      throw new Error('Invalid Drive edit undo payload');
+    }
+
+    const metadata = (await readGoogleDriveFileMetadata(userId, accountId, fileId)) as {
+      mimeType: string;
+    };
+    const content = await readGoogleDriveRevisionContent(userId, accountId, fileId, revisionId);
+
+    await uploadGoogleDriveFileContent({
+      userId,
+      accountId,
+      fileId,
+      content,
+      contentType: this.isEditableBlobMimeType(metadata.mimeType) ? metadata.mimeType : 'text/plain',
+    });
+
+    if (undoPayload.keepForever === true) {
+      await updateGoogleDriveRevision({
+        userId,
+        accountId,
+        fileId,
+        revisionId,
+        keepForever: false,
+      });
+    }
+
+    return true;
+  }
+
+  private isEditableBlobMimeType(mimeType: string): boolean {
+    return mimeType === 'text/plain' || mimeType === 'text/markdown' || mimeType === 'text/x-markdown';
   }
 }

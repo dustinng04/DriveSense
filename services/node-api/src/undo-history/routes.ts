@@ -9,6 +9,7 @@ import {
   type StoreUndoActionInput,
 } from "./repository.js";
 import { withUserTransaction } from "../db/withUserTransaction.js";
+import { executeUndo } from "../suggestions/executor.js";
 
 interface AuthenticatedLocals {
   auth: AuthenticatedRequestContext;
@@ -194,8 +195,16 @@ undoHistoryRouter.post(
         }
 
         try {
-          // TODO: Implement actual platform undo calls based on action/platform
-          // For now, just mark as done
+          await executeUndo(
+            {
+              userId,
+              accountId: entry.accountId ?? "",
+              platform: entry.platform,
+            },
+            entry.action,
+            entry.undoPayload,
+            entry.actionGroupStep,
+          );
           await markUndone(userId, entry.id, { undoStatus: "done" });
           results.push({ entryId: entry.id, success: true });
         } catch (error) {

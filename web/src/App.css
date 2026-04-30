@@ -456,7 +456,24 @@
   margin-bottom: var(--space-4);
 }
 
-.undo-item.undone { opacity: 0.5; }
+.undo-item.status-done { opacity: 0.7; }
+.undo-item.status-expired { border-color: var(--border-subtle); }
+.undo-item.status-failed { border-color: var(--signal); }
+
+.undo-header {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+
+.undo-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-1);
+}
 
 .undo-action-badge {
   font-family: var(--font-mono);
@@ -469,17 +486,67 @@
   border-radius: 4px;
 }
 
-.undo-meta { font-size: 12px; color: var(--text-ghost); margin-top: var(--space-1); }
-
-.undo-details {
+.undo-platform-label,
+.undo-step-count,
+.undo-entry-label,
+.undo-entry-state,
+.undo-status-pill {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11px;
+}
+
+.undo-platform-label,
+.undo-step-count,
+.undo-entry-label {
+  color: var(--text-ghost);
+}
+
+.undo-status-pill,
+.undo-entry-state {
   color: var(--text-secondary);
   background: var(--bg-base);
-  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.undo-status-pill.status-available,
+.undo-entry-state.status-available {
+  color: var(--accent);
+}
+
+.undo-status-pill.status-failed,
+.undo-entry-state.status-failed {
+  color: var(--signal);
+}
+
+.undo-meta { font-size: 12px; color: var(--text-ghost); margin-top: var(--space-1); }
+
+.undo-group-list {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.undo-group-entry {
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
+  padding: var(--space-3);
+}
+
+.undo-group-entry-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.undo-error {
+  color: var(--signal);
+  font-size: 12px;
   margin-top: var(--space-2);
-  overflow-x: auto;
 }
 
 /* ─── Grid utility ──────────────────────────────────────────────────────────── */
@@ -511,4 +578,12 @@
   font-size: 12px;
   color: var(--text-ghost);
   font-family: var(--font-mono);
+}
+
+@media (max-width: 640px) {
+  .undo-header,
+  .undo-group-entry-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }

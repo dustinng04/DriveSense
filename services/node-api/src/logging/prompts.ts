@@ -78,6 +78,44 @@ Respond in JSON:
   "description": "Plain language explanation of why this is recommended.",
   "action": "archive" | "merge" | "rename" | "review"
 }`,
+
+  /**
+   * Content Deduplication - Remove duplicate/redundant sections from a file
+   */
+  CONTENT_DEDUPLICATION: `You are a file hygiene assistant. The following document contains sections that duplicate content from another file.
+
+Target document (to be edited):
+Title: {{target_title}}
+Content: {{target_content}}
+
+Reference document (contains subset):
+Title: {{reference_title}}
+Content: {{reference_content}}
+
+Task: Generate a cleaned version of the target document with redundant sections removed. Keep:
+- All unique content from the target
+- Proper document structure and formatting
+- Section headings and transitions
+
+Remove:
+- Exact duplicates of content already in the reference document
+- Near-duplicate paragraphs that convey the same information
+
+Emit literal search-and-replace operations against the target content. Each old_str must be copied exactly from the target and include enough sentence or paragraph context to be unique.
+
+Respond in JSON:
+{
+  "should_edit": true | false,
+  "reason": "Explanation of what was removed and why",
+  "content_updates": [
+    {
+      "old_str": "exact text to remove/replace — must be a complete sentence or paragraph for uniqueness",
+      "new_str": "",
+      "replace_all_matches": false
+    }
+  ],
+  "confidence": "high" | "medium" | "low"
+}`,
 } as const;
 
 export type PromptTemplateKey = keyof typeof PROMPT_TEMPLATES;
