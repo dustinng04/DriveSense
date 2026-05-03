@@ -215,24 +215,59 @@ async function enrichPairWithContent(
  * Runs in the background; does not await completion before returning.
  */
 export async function processCrossFolderScan(task: CrossFolderScanTask): Promise<void> {
+  const logPrefix = "[CrossFolderScan]";
   try {
+    console.info(
+      `${logPrefix} start user=${task.userId.slice(0, 8)}… platform=${task.platform} candidates=${task.candidates.length} universe=${task.universe.length}`,
+    );
+
     const pairs = detectMetadataDuplicates(task.candidates, task.universe);
 
     if (pairs.length === 0) {
-      // No duplicates found, nothing to store
+      const nearPairs = detectMetadataDuplicates(task.candidates, task.universe, { nameThreshold: 0 });
+      const best = nearPairs[0];
+      if (best) {
+        console.info(
+          `${logPrefix} no metadata pairs (threshold=0.6). best near match score=${best.score.toFixed(3)} name=${best.nameSimilarity.toFixed(3)} size=${best.sizeSimilarity.toFixed(3)} candidate="${best.candidate.name}" match="${best.match.name}"`,
+        );
+      } else {
+        console.info(
+          `${logPrefix} no metadata pairs — comparisons skip: same file id, shared parent folder (not cross-folder), mimeType mismatch, or no comparable files`,
+        );
+      }
       return;
     }
 
+    const top = pairs[0];
+    console.info(
+      `${logPrefix} metadata pairs=${pairs.length} sample score=${top.score.toFixed(3)} names="${top.candidate.name}" vs "${top.match.name}"`,
+    );
+
     const filteredPairs = await filterByRejectionHistory(task.userId, pairs, "merge");
-    if (filteredPairs.length === 0) return;
+    if (filteredPairs.length === 0) {
+      console.info(`${logPrefix} all ${pairs.length} pair(s) filtered by merge rejection history`);
+      return;
+    }
+    if (filteredPairs.length < pairs.length) {
+      console.info(`${logPrefix} after rejection history: ${filteredPairs.length}/${pairs.length}`);
+    }
 
     const adapter = getContentAdapter(task.platform);
+    if (!adapter) {
+      console.warn(`${logPrefix} no content adapter for platform=${task.platform} — storing metadata-only suggestions`);
+    }
 
     const analyzed = adapter
       ? await Promise.all(filteredPairs.map((pair) => enrichPairWithContent(task, adapter, pair)))
       : [];
 
     const analyzedPairs = analyzed.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    const enrichMissed = adapter ? filteredPairs.length - analyzedPairs.length : 0;
+    if (adapter && enrichMissed > 0) {
+      console.info(
+        `${logPrefix} content fetch: ${analyzedPairs.length}/${filteredPairs.length} enriched (${enrichMissed} missing text from one or both files — metadata-only suggestion path)`,
+      );
+    }
     const analyzedByKey = new Map<string, (typeof analyzedPairs)[number]>();
 
     for (const entry of analyzedPairs) {
@@ -260,6 +295,7 @@ export async function processCrossFolderScan(task: CrossFolderScanTask): Promise
         return storeSuggestion(task.userId, task.accountId, input);
       }),
     );
+    console.info(`${logPrefix} queued storeSuggestion for ${filteredPairs.length} pair(s)`);
   } catch (error) {
     // Log error but don't throw; the HTTP response was already sent
     console.error(

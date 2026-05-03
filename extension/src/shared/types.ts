@@ -28,6 +28,7 @@ export interface Suggestion {
   status: SuggestionStatus;
   fileIds: string[];
   platform: Platform;
+  accountId?: string | null;
   reason?: string;
   analysis?: Record<string, unknown>;
 }
@@ -142,7 +143,7 @@ export interface ExtensionStorage {
   userId: string | null;
   /** Cached pending suggestions (refreshed by background worker) */
   pendingSuggestions: Suggestion[];
-  /** ID of the last suggestion shown in an overlay, to prevent re-showing */
+  /** ID of the suggestion currently surfaced in the overlay, if still pending */
   lastShownSuggestionId: string | null;
   /** Currently active context detected by the content script */
   activeContext: {

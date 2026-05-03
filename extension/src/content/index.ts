@@ -13,6 +13,7 @@ import type { BackgroundMessage, BackgroundResponse, OAuthAccountSummary, Platfo
 const LOG_PREFIX = '[DriveSense]';
 const OVERLAY_ID = 'drivesense-overlay';
 const TOAST_ID = 'drivesense-toast';
+let activeOverlaySuggestionId: string | null = null;
 
 // ─── Context detection ────────────────────────────────────────────────────────
 
@@ -285,6 +286,7 @@ function buildOverlay(suggestion: Suggestion): HTMLElement {
     bottom: 24px;
     right: 24px;
     z-index: 2147483647;
+    pointer-events: auto;
     width: 340px;
     background: ${colors.bg};
     border: 1px solid ${colors.border};
@@ -308,9 +310,15 @@ function buildOverlay(suggestion: Suggestion): HTMLElement {
         from { opacity: 0; transform: translateY(8px); }
         to   { opacity: 1; transform: translateY(0); }
       }
-      #${OVERLAY_ID} button { cursor: pointer; border: none; background: none; font-family: inherit; font-size: 14px; transition: opacity 0.2s; }
+      #${OVERLAY_ID}, #${OVERLAY_ID} * { box-sizing: border-box; }
+      #${OVERLAY_ID} button { cursor: pointer; border: none; background: none; font-family: inherit; font-size: 14px; transition: opacity 0.2s; pointer-events: auto; }
+      #${OVERLAY_ID} button:disabled { cursor: default; opacity: 0.55; }
       #${OVERLAY_ID} .ds-btn-primary { color: ${colors.accent}; font-weight: 600; border-bottom: 1px solid ${colors.accent}; padding: 2px 0; }
       #${OVERLAY_ID} .ds-btn-ghost { color: ${colors.secondary}; padding: 2px 0; }
+      #${OVERLAY_ID} .ds-status { margin: 0 0 12px 32px; font-size: 13px; color: ${colors.secondary}; line-height: 1.4; display: none; }
+      #${OVERLAY_ID} .ds-status[data-visible="true"] { display: block; animation: ds-fade-up 0.18s ease-out; }
+      #${OVERLAY_ID} .ds-status[data-tone="success"] { color: ${colors.accent}; }
+      #${OVERLAY_ID} .ds-status[data-tone="problem"] { color: ${colors.secondary}; }
       #${TOAST_ID} button { cursor: pointer; border: none; background: none; font-family: inherit; font-size: 13px; }
       #${TOAST_ID} .ds-toast-action { color: ${colors.accent}; font-weight: 600; border-bottom: 1px solid ${colors.accent}; padding: 0; }
       #${TOAST_ID} .ds-toast-dismiss { color: ${colors.secondary}; opacity: 0.75; padding: 0; }
@@ -339,11 +347,12 @@ function buildOverlay(suggestion: Suggestion): HTMLElement {
         <p style="margin:0 0 4px; font-family:'Fraunces', serif; font-size:18px; font-weight:400; color:${colors.text}; line-height:1.2;">${escapeHtml(suggestion.title)}</p>
         <p style="margin:0; font-size:14px; color:${colors.secondary}; line-height:1.5;">${escapeHtml(suggestion.reason || suggestion.description)}</p>
       </div>
-      <button id="ds-close" style="color:${colors.secondary}; font-size:20px; line-height:1; padding:0; opacity:0.5;">×</button>
+      <button id="ds-close" type="button" style="color:${colors.secondary}; font-size:20px; line-height:1; padding:0; opacity:0.5;">×</button>
     </div>
+    <p id="ds-confirm-status" class="ds-status" aria-live="polite"></p>
     <div style="display:flex; gap:16px; align-items:center;">
-      <button id="ds-confirm" class="ds-btn-primary">${actionLabels[suggestion.action] || "Accept?"}</button>
-      <button id="ds-skip" class="ds-btn-ghost">Not now</button>
+      <button id="ds-confirm" type="button" class="ds-btn-primary">${actionLabels[suggestion.action] || "Accept?"}</button>
+      <button id="ds-skip" type="button" class="ds-btn-ghost">Not now</button>
     </div>
   `;
 
@@ -361,10 +370,26 @@ function escapeHtml(text: string): string {
 
 function removeOverlay(): void {
   document.getElementById(OVERLAY_ID)?.remove();
+  activeOverlaySuggestionId = null;
 }
 
 function removeToast(): void {
   document.getElementById(TOAST_ID)?.remove();
+}
+
+function setOverlayBusy(overlay: HTMLElement, busy: boolean): void {
+  overlay.querySelectorAll<HTMLButtonElement>('button').forEach((button) => {
+    button.disabled = busy;
+  });
+}
+
+function setConfirmStatus(overlay: HTMLElement, message: string, tone: 'neutral' | 'success' | 'problem' = 'neutral'): void {
+  const statusEl = overlay.querySelector<HTMLElement>('#ds-confirm-status');
+  if (!statusEl) return;
+
+  statusEl.textContent = message;
+  statusEl.dataset.visible = message ? 'true' : 'false';
+  statusEl.dataset.tone = tone;
 }
 
 function buildToast(message: string, isError = false): HTMLElement {
@@ -462,48 +487,106 @@ function showUndoToast(undoRef: string): void {
 }
 
 async function showSuggestion(suggestion: Suggestion): Promise<void> {
+  if (activeOverlaySuggestionId === suggestion.id && document.getElementById(OVERLAY_ID)) {
+    return;
+  }
+
   removeOverlay(); // remove any stale one
   const overlay = buildOverlay(suggestion);
   document.body.appendChild(overlay);
+  activeOverlaySuggestionId = suggestion.id;
 
-  // Track that we've shown this suggestion
+  const stopOverlayEvent = (event: Event): void => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  overlay.addEventListener('pointerdown', stopOverlayEvent);
+  overlay.addEventListener('mousedown', stopOverlayEvent);
+  overlay.addEventListener('click', stopOverlayEvent);
+
+  // Track the suggestion currently surfaced to the user.
   await chrome.storage.local.set({ lastShownSuggestionId: suggestion.id });
 
-  overlay.querySelector('#ds-close')?.addEventListener('click', () => removeOverlay());
-
-  overlay.querySelector('#ds-confirm')?.addEventListener('click', async () => {
+  overlay.querySelector('#ds-close')?.addEventListener('click', (event) => {
+    stopOverlayEvent(event);
     removeOverlay();
+  });
+
+  overlay.querySelector('#ds-confirm')?.addEventListener('click', async (event) => {
+    stopOverlayEvent(event);
+    const confirmButton = overlay.querySelector<HTMLButtonElement>('#ds-confirm');
+    const originalLabel = confirmButton?.textContent ?? '';
+
+    setOverlayBusy(overlay, true);
+    overlay.dataset.confirming = 'true';
+    setConfirmStatus(overlay, 'Working on it...');
+    if (confirmButton) {
+      confirmButton.textContent = 'Working...';
+    }
+
     try {
       const response = await sendMessage({ type: 'CONFIRM_SUGGESTION', id: suggestion.id });
       if (response.type === 'ERROR') {
         throw new Error(response.message);
       }
+      setConfirmStatus(overlay, 'Done.', 'success');
+      if (confirmButton) {
+        confirmButton.textContent = 'Done';
+      }
       if (response.type === 'OK' && response.undoRef) {
         showUndoToast(response.undoRef);
       }
+      window.setTimeout(removeOverlay, 800);
     } catch (error) {
       console.error(LOG_PREFIX, 'Failed to confirm suggestion', error);
-      showErrorToast(error instanceof Error ? error.message : 'Failed to confirm suggestion.');
+      delete overlay.dataset.confirming;
+      setOverlayBusy(overlay, false);
+      setConfirmStatus(
+        overlay,
+        error instanceof Error ? error.message : 'Could not complete this action.',
+        'problem',
+      );
+      if (confirmButton) {
+        confirmButton.textContent = originalLabel;
+      }
     }
   });
 
-  overlay.querySelector('#ds-skip')?.addEventListener('click', () => {
+  overlay.querySelector('#ds-skip')?.addEventListener('click', (event) => {
+    stopOverlayEvent(event);
     removeOverlay();
   });
 }
 
 async function maybeShowNextSuggestionFromStorage(): Promise<void> {
-  const { pendingSuggestions, lastShownSuggestionId } =
-    await chrome.storage.local.get(['pendingSuggestions', 'lastShownSuggestionId']) as {
+  const { pendingSuggestions, lastShownSuggestionId, activeContext } =
+    await chrome.storage.local.get(['pendingSuggestions', 'lastShownSuggestionId', 'activeContext']) as {
       pendingSuggestions?: Suggestion[];
       lastShownSuggestionId?: string | null;
+      activeContext?: { platform?: Platform; accountId?: string } | null;
     };
 
-  const suggestions = (pendingSuggestions ?? []).filter((s) => s.status === 'pending');
-  const next = suggestions.find((s) => s.id !== lastShownSuggestionId);
+  const suggestions = (pendingSuggestions ?? []).filter((s) => {
+    if (s.status !== 'pending') return false;
+    if (!activeContext?.platform || s.platform !== activeContext.platform) return false;
+    if (!activeContext.accountId) return true;
+    return s.accountId === activeContext.accountId;
+  });
+  const next =
+    suggestions.find((s) => s.id === lastShownSuggestionId) ??
+    suggestions[0];
+
   if (next) {
     await showSuggestion(next);
+    return;
   }
+
+  if (document.getElementById(OVERLAY_ID)?.dataset.confirming === 'true') {
+    return;
+  }
+
+  removeOverlay();
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────

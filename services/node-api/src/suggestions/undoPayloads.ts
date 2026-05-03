@@ -50,9 +50,10 @@ export interface DriveMergeArchiveUndoPayload {
 // MERGE — Notion (two entries, same action_group_id)
 // ============================================================================
 
-export interface NotionMergeAppendUndoPayload {
+export interface NotionMergeReplaceUndoPayload {
   survivorPageId: string;
-  appendedBlockIds: string[]; // returned by POST /blocks/{survivorId}/children
+  previousMarkdown: string;
+  strategy: 'replace_content';
 }
 
 export interface NotionMergeArchiveUndoPayload {
@@ -73,14 +74,9 @@ export interface DriveEditUndoPayload {
 // EDIT — Notion
 // ============================================================================
 
-export interface NotionEditBlockSnapshot {
-  blockId: string;
-  beforeContent: unknown; // full block object as returned by GET /blocks/{blockId}
-}
-
 export interface NotionEditUndoPayload {
   pageId: string;
-  blockSnapshots: NotionEditBlockSnapshot[];
+  previousMarkdown: string;
 }
 
 // ============================================================================
@@ -97,7 +93,7 @@ export type DriveUndoPayload =
 export type NotionUndoPayload =
   | NotionArchiveUndoPayload
   | NotionRenameUndoPayload
-  | NotionMergeAppendUndoPayload
+  | NotionMergeReplaceUndoPayload
   | NotionMergeArchiveUndoPayload
   | NotionEditUndoPayload;
 

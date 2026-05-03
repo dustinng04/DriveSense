@@ -1,11 +1,13 @@
+import { UpstreamApiError } from '../integrations/errors.js';
 import {
   PlatformScanAdapter,
   ScannedFile,
   PlatformContentAdapter,
   PlatformExecutionAdapter,
   EditPatch,
+  ContentUpdate,
 } from '../scanner/types.js';
-import { applyOpsLocally } from '../suggestions/editPatch.js';
+import { applyOpsLocally, countOccurrences } from '../suggestions/editPatch.js';
 import {
   listNotionBlockChildren,
   readNotionPage,
@@ -15,6 +17,81 @@ import {
   updateNotionPage,
   searchNotionPages,
 } from './service.js';
+
+function extractTitlePlainText(value: unknown): string | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const first = value[0] as Record<string, unknown> | undefined;
+  if (!first) {
+    return null;
+  }
+
+  if (typeof first.plain_text === 'string' && first.plain_text.trim().length > 0) {
+    return first.plain_text;
+  }
+
+  const text = first.text as Record<string, unknown> | undefined;
+  if (typeof text?.content === 'string' && text.content.trim().length > 0) {
+    return text.content;
+  }
+
+  return null;
+}
+
+function resolveNotionPageTitle(page: Record<string, unknown>): string {
+  const topLevelTitle = extractTitlePlainText(page.title);
+  if (topLevelTitle) {
+    return topLevelTitle;
+  }
+
+  const properties = page.properties;
+  if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
+    for (const property of Object.values(properties as Record<string, unknown>)) {
+      if (!property || typeof property !== 'object' || Array.isArray(property)) {
+        continue;
+      }
+
+      const propertyRecord = property as Record<string, unknown>;
+      if (propertyRecord.type !== 'title') {
+        continue;
+      }
+
+      const title = extractTitlePlainText(propertyRecord.title);
+      if (title) {
+        return title;
+      }
+    }
+  }
+
+  return 'Untitled';
+}
+
+function mapNotionPageToScannedFile(page: {
+  id: string;
+  object?: string;
+  last_edited_time: string;
+  created_time: string;
+  parent?: { page_id?: string; database_id?: string };
+}): ScannedFile {
+  const parentIds: string[] = [];
+  if (page.parent?.page_id) parentIds.push(page.parent.page_id);
+  if (page.parent?.database_id) parentIds.push(page.parent.database_id);
+
+  return {
+    id: page.id,
+    name: resolveNotionPageTitle(page as Record<string, unknown>),
+    mimeType:
+      page.object === 'database'
+        ? 'application/vnd.notion.database'
+        : 'application/vnd.notion.page',
+    modifiedAt: page.last_edited_time,
+    createdAt: page.created_time,
+    platform: 'notion',
+    parentFolderIds: parentIds,
+  };
+}
 
 /**
  * Adapter for Notion platform to bridge between FileScanner and NotionService.
@@ -46,7 +123,11 @@ export class NotionScanAdapter implements PlatformScanAdapter {
         files.push(this.mapNotionPage(resource));
       }
     } catch (err) {
-      console.debug('[NotionScanAdapter] Could not read resource itself:', err);
+      // If 404, might be workspace root - try search API
+      if (err instanceof UpstreamApiError && err.statusCode === 404) {
+        isWorkspaceRoot = true;
+      }
+      console.log('[NotionScanAdapter] Could not read resource itself:', err);
     }
 
     // If workspace root, use search API instead of block children
@@ -99,36 +180,7 @@ export class NotionScanAdapter implements PlatformScanAdapter {
    * Maps a Notion Page object (from GET /pages/{id}) to ScannedFile.
    */
   private mapNotionPage(page: any): ScannedFile {
-    // Extract title from various possible locations
-    let title = 'Untitled';
-
-    // Database: page.title array
-    if (Array.isArray(page.title) && page.title[0]?.plain_text) {
-      title = page.title[0].plain_text;
-    }
-    // Page: page.properties.title or page.properties.Name
-    else if (page.properties?.title?.title?.[0]?.plain_text) {
-      title = page.properties.title.title[0].plain_text;
-    } else if (page.properties?.Name?.title?.[0]?.plain_text) {
-      title = page.properties.Name.title[0].plain_text;
-    }
-
-    const parentIds: string[] = [];
-    if (page.parent?.page_id) parentIds.push(page.parent.page_id);
-    if (page.parent?.database_id) parentIds.push(page.parent.database_id);
-
-    return {
-      id: page.id,
-      name: title,
-      mimeType:
-        page.object === 'database'
-          ? 'application/vnd.notion.database'
-          : 'application/vnd.notion.page',
-      modifiedAt: page.last_edited_time,
-      createdAt: page.created_time,
-      platform: 'notion',
-      parentFolderIds: parentIds,
-    };
+    return mapNotionPageToScannedFile(page);
   }
 
   /**
@@ -174,6 +226,13 @@ export class NotionContentAdapter implements PlatformContentAdapter {
  */
 export class NotionExecutionAdapter implements PlatformExecutionAdapter {
   readonly platform = 'notion';
+
+  private hasTruncatedMarkdownResult(result: Record<string, unknown>): boolean {
+    return (
+      result.truncated === true ||
+      (Array.isArray(result.unknown_block_ids) && result.unknown_block_ids.length > 0)
+    );
+  }
 
   async getFileMetadata(
     userId: string,
@@ -248,8 +307,68 @@ export class NotionExecutionAdapter implements PlatformExecutionAdapter {
     survivorPageId: string,
     sourcePageId: string,
   ): Promise<Array<{ payload: Record<string, unknown>; step?: number }>> {
-    // TODO: Implement Notion merge with block copying and source archiving
-    throw new Error('Notion merge executor not yet implemented');
+    const survivorMarkdown = await readNotionPageMarkdown(userId, accountId, survivorPageId);
+    const sourceMarkdown = await readNotionPageMarkdown(userId, accountId, sourcePageId);
+    const survivorChanged = sourceMarkdown.trim().length > 0;
+
+    if (survivorChanged) {
+      // Use search & replace to append source content to survivor
+      // Match the entire survivor content and replace with merged version
+      const mergedContent = survivorMarkdown.trim()
+        ? `${survivorMarkdown.trim()}\n\n---\n\n${sourceMarkdown.trim()}`
+        : sourceMarkdown.trim();
+      
+      const result = await updateNotionPageMarkdown({
+        userId,
+        accountId,
+        pageId: survivorPageId,
+        contentUpdates: [{
+          old_str: survivorMarkdown,
+          new_str: mergedContent,
+          replace_all_matches: false,
+        }],
+      }) as Record<string, unknown>;
+
+      if (this.hasTruncatedMarkdownResult(result)) {
+        throw new Error('Notion merge markdown update returned truncated content');
+      }
+    }
+
+    try {
+      await updateNotionPage({
+        userId,
+        accountId,
+        pageId: sourcePageId,
+        inTrash: true,
+      });
+    } catch (error) {
+      if (survivorChanged) {
+        await replaceNotionPageMarkdown({
+          userId,
+          accountId,
+          pageId: survivorPageId,
+          markdown: survivorMarkdown,
+        });
+      }
+      throw error;
+    }
+
+    return [
+      {
+        step: 1,
+        payload: {
+          survivorPageId,
+          previousMarkdown: survivorMarkdown,
+          strategy: 'replace_content',
+        },
+      },
+      {
+        step: 2,
+        payload: {
+          sourcePageId,
+        },
+      },
+    ];
   }
 
   async executeEdit(
@@ -269,7 +388,7 @@ export class NotionExecutionAdapter implements PlatformExecutionAdapter {
         contentUpdates: applied.appliedUpdates,
       }) as Record<string, unknown>;
 
-      if (result.truncated === true || Array.isArray(result.unknown_block_ids)) {
+      if (this.hasTruncatedMarkdownResult(result)) {
         throw new Error('Notion markdown update returned truncated content; edit was not considered safe');
       }
     }
@@ -290,8 +409,19 @@ export class NotionExecutionAdapter implements PlatformExecutionAdapter {
     accountId: string,
     undoPayload: Record<string, unknown>,
   ): Promise<boolean> {
-    // TODO: Implement Notion unarchive operation
-    throw new Error('Notion undo archive not yet implemented');
+    const pageId = typeof undoPayload.pageId === 'string' ? undoPayload.pageId : '';
+    if (!pageId) {
+      throw new Error('Invalid Notion archive undo payload');
+    }
+
+    await updateNotionPage({
+      userId,
+      accountId,
+      pageId,
+      inTrash: false,
+    });
+
+    return true;
   }
 
   async undoRename(
@@ -299,8 +429,23 @@ export class NotionExecutionAdapter implements PlatformExecutionAdapter {
     accountId: string,
     undoPayload: Record<string, unknown>,
   ): Promise<boolean> {
-    // TODO: Implement Notion rename to original title
-    throw new Error('Notion undo rename not yet implemented');
+    const pageId = typeof undoPayload.pageId === 'string' ? undoPayload.pageId : '';
+    const oldTitle = typeof undoPayload.oldTitle === 'string' ? undoPayload.oldTitle : '';
+
+    if (!pageId) {
+      throw new Error('Invalid Notion rename undo payload');
+    }
+
+    await updateNotionPage({
+      userId,
+      accountId,
+      pageId,
+      properties: {
+        title: [{ text: { content: oldTitle } }],
+      },
+    });
+
+    return true;
   }
 
   async undoMerge(
@@ -309,8 +454,47 @@ export class NotionExecutionAdapter implements PlatformExecutionAdapter {
     undoPayload: Record<string, unknown>,
     step?: number,
   ): Promise<boolean> {
-    // TODO: Implement Notion merge undo (delete appended blocks and unarchive source)
-    throw new Error('Notion undo merge not yet implemented');
+    if (step === 2) {
+      const sourcePageId = typeof undoPayload.sourcePageId === 'string' ? undoPayload.sourcePageId : '';
+      if (!sourcePageId) {
+        throw new Error('Invalid Notion merge archive undo payload');
+      }
+
+      await updateNotionPage({
+        userId,
+        accountId,
+        pageId: sourcePageId,
+        inTrash: false,
+      });
+
+      return true;
+    }
+
+    if (step === 1) {
+      const survivorPageId =
+        typeof undoPayload.survivorPageId === 'string' ? undoPayload.survivorPageId : '';
+      const previousMarkdown =
+        typeof undoPayload.previousMarkdown === 'string' ? undoPayload.previousMarkdown : '';
+
+      if (!survivorPageId) {
+        throw new Error('Invalid Notion merge content undo payload');
+      }
+
+      const result = await replaceNotionPageMarkdown({
+        userId,
+        accountId,
+        pageId: survivorPageId,
+        markdown: previousMarkdown,
+      }) as Record<string, unknown>;
+
+      if (this.hasTruncatedMarkdownResult(result)) {
+        throw new Error('Notion merge restore returned truncated content');
+      }
+
+      return true;
+    }
+
+    throw new Error(`Unsupported Notion merge undo step '${String(step)}'`);
   }
 
   async undoEdit(
@@ -333,7 +517,7 @@ export class NotionExecutionAdapter implements PlatformExecutionAdapter {
       markdown: previousMarkdown,
     }) as Record<string, unknown>;
 
-    if (result.truncated === true || Array.isArray(result.unknown_block_ids)) {
+    if (this.hasTruncatedMarkdownResult(result)) {
       throw new Error('Notion markdown restore returned truncated content');
     }
 
@@ -348,48 +532,52 @@ export class NotionExecutionAdapter implements PlatformExecutionAdapter {
    * Maps a Notion Page object to ScannedFile.
    */
   private mapNotionPage(page: any): ScannedFile {
-    let title = 'Untitled';
-    if (Array.isArray(page.title) && page.title[0]?.plain_text) {
-      title = page.title[0].plain_text;
-    } else if (page.properties?.title?.title?.[0]?.plain_text) {
-      title = page.properties.title.title[0].plain_text;
-    } else if (page.properties?.Name?.title?.[0]?.plain_text) {
-      title = page.properties.Name.title[0].plain_text;
-    }
-
-    const parentIds: string[] = [];
-    if (page.parent?.page_id) parentIds.push(page.parent.page_id);
-    if (page.parent?.database_id) parentIds.push(page.parent.database_id);
-
-    return {
-      id: page.id,
-      name: title,
-      mimeType:
-        page.object === 'database'
-          ? 'application/vnd.notion.database'
-          : 'application/vnd.notion.page',
-      modifiedAt: page.last_edited_time,
-      createdAt: page.created_time,
-      platform: 'notion',
-      parentFolderIds: parentIds,
-    };
+    return mapNotionPageToScannedFile(page);
   }
 
   /**
    * Extract title from Notion page properties.
    */
   private extractNotionTitle(page: Record<string, unknown>): string {
-    const properties = page.properties as Record<string, unknown>;
-    if (!properties || typeof properties !== 'object') return '';
+    const title = resolveNotionPageTitle(page);
+    return title === 'Untitled' ? '' : title;
+  }
 
-    const titleProp = properties.title as Record<string, unknown>;
-    if (!titleProp || typeof titleProp !== 'object') return '';
+  private buildMergeContentUpdate(survivorMarkdown: string, sourceMarkdown: string): ContentUpdate | null {
+    const source = sourceMarkdown.trim();
 
-    const titleArray = titleProp.rich_text as unknown[];
-    if (!Array.isArray(titleArray) || titleArray.length === 0) return '';
+    if (!source) {
+      return null;
+    }
+    if (!survivorMarkdown.trim()) {
+      return null;
+    }
 
-    const titleObj = titleArray[0] as Record<string, unknown>;
-    const text = titleObj.text as Record<string, unknown>;
-    return (text?.content as string) ?? '';
+    const anchor = this.findUniqueTailAnchor(survivorMarkdown);
+    if (!anchor) {
+      throw new Error('Notion merge could not find a unique tail anchor for append-style update');
+    }
+
+    return {
+      old_str: anchor,
+      new_str: `${anchor}\n\n---\n\n${source}`,
+      replace_all_matches: false,
+    };
+  }
+
+  private findUniqueTailAnchor(content: string): string | null {
+    const trimmed = content.trimEnd();
+    const anchorLengths = [500, 300, 200, 120, 80, 40];
+
+    for (const length of anchorLengths) {
+      if (trimmed.length < length) continue;
+      const anchor = trimmed.slice(-length).trim();
+      if (!anchor) continue;
+      if (countOccurrences(content, anchor) === 1) {
+        return anchor;
+      }
+    }
+
+    return null;
   }
 }

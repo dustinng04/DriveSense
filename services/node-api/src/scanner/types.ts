@@ -266,7 +266,7 @@ export interface PlatformExecutionAdapter {
   ): Promise<boolean>;
 
   /**
-   * Undo a merge action: delete appended blocks, restore source.
+   * Undo a merge action: restore survivor content snapshot, restore source.
    * @param userId    - DriveSense user ID
    * @param accountId - Platform account ID
    * @param undoPayload - Payload from executeMerge (step-specific)

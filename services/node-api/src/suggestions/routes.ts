@@ -5,14 +5,16 @@ import {
   listSuggestions,
   getSuggestion,
   updateSuggestionStatus,
+  markSuggestionForReview,
   applySuggestionEnrichment,
   type ReceiveSuggestionInput,
   type SuggestionStatus,
 } from "./repository.js";
 import { PLATFORM_ACCOUNT_HEADER } from "../auth/platformAccount.js";
-import { executeArchive, executeRename, executeMerge, executeEdit } from "./executor.js";
+import { CompensationError, executeArchive, executeRename, executeMerge, executeEdit, executeUndo } from "./executor.js";
 import { withUserTransaction } from "../db/withUserTransaction.js";
 import type { EditPatch } from "../scanner/types.js";
+import type { PlatformContext, UndoEntry } from "./executor.types.js";
 
 interface AuthenticatedLocals {
   auth: AuthenticatedRequestContext;
@@ -61,6 +63,50 @@ function isEditPatch(v: unknown): v is EditPatch {
       (update.replace_all_matches === undefined || typeof update.replace_all_matches === "boolean")
     );
   });
+}
+
+function readMergeBlockReason(suggestion: {
+  action: string;
+  confidence?: string;
+  analysis?: Record<string, unknown>;
+}): string | null {
+  if (suggestion.action !== "merge") return null;
+
+  const analysis = suggestion.analysis ?? {};
+  const relationship = analysis.relationship;
+  const enrichment = analysis.enrichment as Record<string, unknown> | undefined;
+  const enrichmentResult = enrichment?.result as Record<string, unknown> | undefined;
+  const isDuplicate = enrichmentResult?.is_duplicate;
+
+  if (relationship === "unrelated") {
+    return "merge cannot be executed because enrichment marked the files as unrelated";
+  }
+  if (isDuplicate === false) {
+    return "merge cannot be executed because enrichment concluded the files are not duplicates";
+  }
+  if (suggestion.confidence === "low") {
+    return "merge cannot be executed because the suggestion confidence is low";
+  }
+
+  return null;
+}
+
+async function compensateExecutedSuggestion(
+  platformCtx: PlatformContext,
+  undoEntries: UndoEntry[],
+): Promise<void> {
+  const sortedEntries = [...undoEntries].sort(
+    (a, b) => (b.actionGroupStep ?? 0) - (a.actionGroupStep ?? 0),
+  );
+
+  for (const entry of sortedEntries) {
+    await executeUndo(
+      platformCtx,
+      entry.action,
+      entry.undoPayload,
+      entry.actionGroupStep,
+    );
+  }
 }
 
 export const suggestionsRouter = Router();
@@ -136,9 +182,12 @@ suggestionsRouter.get(
     }
 
     try {
+      const raw = req.header(PLATFORM_ACCOUNT_HEADER) ?? req.header("X-Platform-Account");
+      const accountId = typeof raw === "string" ? raw.trim() : "";
       const result = await listSuggestions(res.locals.auth.userId, {
         status: status as SuggestionStatus | undefined,
         platform: platform as ReceiveSuggestionInput["platform"] | undefined,
+        accountId: accountId || undefined,
         limit: parsedLimit,
         offset: parsedOffset,
       });
@@ -202,12 +251,16 @@ suggestionsRouter.patch(
           });
         }
 
-        const raw = req.header(PLATFORM_ACCOUNT_HEADER) ?? req.header("X-Platform-Account");
-        const accountId = typeof raw === "string" ? raw.trim() : "";
+        const accountId = suggestion.accountId;
+        if (!accountId) {
+          return res.status(409).json({
+            error: "Suggestion cannot be executed because it has no platform account.",
+          });
+        }
 
         // Execute the action and store undo entries in a transaction
         try {
-          const platformCtx = {
+          const platformCtx: PlatformContext = {
             userId,
             accountId,
             platform: suggestion.platform as "google_drive" | "notion",
@@ -228,6 +281,10 @@ suggestionsRouter.patch(
             }
             undoEntries = await executeRename(platformCtx, suggestion.fileIds[0], newName.trim());
           } else if (suggestion.action === "merge") {
+            const mergeBlockReason = readMergeBlockReason(suggestion);
+            if (mergeBlockReason) {
+              return res.status(409).json({ error: mergeBlockReason });
+            }
             undoEntries = await executeMerge(platformCtx, suggestion.fileIds[0], suggestion.fileIds[1]);
           } else if (suggestion.action === "edit") {
             const editPatch = (suggestion.analysis as Record<string, unknown> | null | undefined)?.editPatch;
@@ -246,37 +303,50 @@ suggestionsRouter.patch(
           }
 
           // Store undo entries and update suggestion status in a transaction
-          await withUserTransaction(userId, async (client) => {
-            // Store each undo entry
-            for (const entry of undoEntries) {
+          try {
+            await withUserTransaction(userId, async (client) => {
+              // Store each undo entry
+              for (const entry of undoEntries) {
+                await client.query(
+                  `insert into public.undo_history
+                    (user_id, suggestion_id, action, platform, action_details, undo_payload,
+                     account_id, action_group_id, action_group_step, expires_at)
+                   values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10)`,
+                  [
+                    userId,
+                    suggestionId,
+                    entry.action,
+                    entry.platform,
+                    JSON.stringify(entry.actionDetails),
+                    JSON.stringify(entry.undoPayload),
+                    accountId,
+                    entry.actionGroupId ?? null,
+                    entry.actionGroupStep ?? null,
+                    entry.expiresAt ?? null,
+                  ],
+                );
+              }
+
+              // Update suggestion status
               await client.query(
-                `insert into public.undo_history
-                  (user_id, suggestion_id, action, platform, action_details, undo_payload,
-                   account_id, action_group_id, action_group_step, expires_at)
-                 values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10)`,
-                [
-                  userId,
-                  suggestionId,
-                  entry.action,
-                  entry.platform,
-                  JSON.stringify(entry.actionDetails),
-                  JSON.stringify(entry.undoPayload),
-                  accountId,
-                  entry.actionGroupId ?? null,
-                  entry.actionGroupStep ?? null,
-                  entry.expiresAt ?? null,
-                ],
+                `update public.suggestions
+                 set status = $2, confirmed_at = now()
+                 where user_id = $1 and id = $3`,
+                [userId, "confirmed", suggestionId],
+              );
+            });
+          } catch (persistError) {
+            try {
+              await compensateExecutedSuggestion(platformCtx, undoEntries);
+            } catch (compensationError) {
+              throw new CompensationError(
+                "Failed to persist executed suggestion and failed to compensate platform changes",
+                persistError instanceof Error ? persistError : new Error("Unknown persistence error"),
+                compensationError instanceof Error ? compensationError : new Error("Unknown compensation error"),
               );
             }
-
-            // Update suggestion status
-            await client.query(
-              `update public.suggestions
-               set status = $2, confirmed_at = now()
-               where user_id = $1 and id = $3`,
-              [userId, "confirmed", suggestionId],
-            );
-          });
+            throw persistError;
+          }
 
           // Return updated suggestion
           const updated = await getSuggestion(userId, suggestionId);
@@ -287,20 +357,40 @@ suggestionsRouter.patch(
               : undoEntries[0].actionGroupId, // For grouped entries, use action_group_id
           });
         } catch (executorError) {
-          // Execution failed — suggestion stays pending for retry
+          const errorMessage = executorError instanceof Error ? executorError.message : "Unknown error";
+          const reviewSuggestion = suggestion.action === "review"
+            ? suggestion
+            : await markSuggestionForReview(userId, suggestionId, {
+                originalAction: suggestion.action,
+                errorMessage,
+              });
+
           if (executorError instanceof Error) {
+            if (executorError instanceof CompensationError) {
+              return res.status(502).json({
+                error: "Platform action failed and automatic rollback also failed. Suggestion was moved to review.",
+                message: executorError.originalError.message,
+                compensationError: executorError.compensationError.message,
+                suggestion: reviewSuggestion,
+              });
+            }
             if (executorError.message.includes("not yet implemented")) {
               return res.status(501).json({
                 error: "This action executor is not yet implemented",
                 message: executorError.message,
+                suggestion: reviewSuggestion,
               });
             }
             return res.status(502).json({
-              error: "Platform API call failed.",
+              error: "Platform API call failed. Suggestion was moved to review.",
               message: executorError.message,
+              suggestion: reviewSuggestion,
             });
           }
-          return res.status(502).json({ error: "Platform API call failed." });
+          return res.status(502).json({
+            error: "Platform API call failed. Suggestion was moved to review.",
+            suggestion: reviewSuggestion,
+          });
         }
       }
 
@@ -323,7 +413,11 @@ suggestionsRouter.patch(
 suggestionsRouter.patch(
   "/:id/enrichment",
   async (req: Request, res: Response<unknown, AuthenticatedLocals>) => {
-    const { title, description, reason, confidence, analysis } = req.body ?? {};
+    const { action, title, description, reason, confidence, analysis } = req.body ?? {};
+
+    if (action !== undefined && !isValidAction(action)) {
+      return res.status(400).json({ error: "action must be one of: archive, merge, rename, review, edit when provided" });
+    }
 
     if (title !== undefined && (typeof title !== "string" || !title.trim())) {
       return res.status(400).json({ error: "title must be a non-empty string when provided" });
@@ -343,6 +437,7 @@ suggestionsRouter.patch(
 
     try {
       const suggestion = await applySuggestionEnrichment(res.locals.auth.userId, req.params.id, {
+        action,
         title: typeof title === "string" ? title.trim() : undefined,
         description: typeof description === "string" ? description.trim() : undefined,
         reason: typeof reason === "string" ? reason.trim() : reason ?? undefined,

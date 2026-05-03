@@ -1,4 +1,4 @@
-import type { Confidence, Provider, Suggestion } from './types.js';
+import type { Confidence, Provider, Suggestion, SuggestionAction } from './types.js';
 import { generateText, safeParseJson, type LlmMessage } from './llmAdapters.js';
 
 type SimilarityJson = {
@@ -29,7 +29,6 @@ function renderSimilarityPrompt(vars: {
   file_b_title: string;
   file_b_content: string;
 }): string {
-  // Keep aligned with `services/node-api/src/logging/prompts.ts` (SIMILARITY_ANALYSIS).
   return `You are a file hygiene assistant. Compare the following two documents and determine if they are near-duplicates.
 
 File A:
@@ -61,7 +60,6 @@ function renderContentDeduplicationPrompt(vars: {
   reference_title: string;
   reference_content: string;
 }): string {
-  // Keep aligned with `services/node-api/src/logging/prompts.ts` (CONTENT_DEDUPLICATION).
   return `You are a file hygiene assistant. The following document contains sections that duplicate content from another file.
 
 Target document (to be edited):
@@ -126,6 +124,7 @@ export async function enrichSuggestionWithByok(
   suggestion: Suggestion,
   opts: { provider: Provider; apiKey: string },
 ): Promise<{
+  action?: SuggestionAction;
   reason: string;
   confidence: Confidence;
   analysisPatch: Record<string, unknown>;
@@ -166,7 +165,10 @@ export async function enrichSuggestionWithByok(
   }
 
   const adjustedConfidence = confidenceFromDuplicate(parsed.is_duplicate, extracted.jaccardScore);
+  const action =
+    parsed.is_duplicate === false || parsed.is_duplicate === 'unsure' ? 'review' : undefined;
   return {
+    action,
     reason: parsed.reason.trim(),
     confidence: adjustedConfidence,
     analysisPatch: {
@@ -231,6 +233,7 @@ export async function enrichEditSuggestionWithByok(
   suggestion: Suggestion,
   opts: { provider: Provider; apiKey: string },
 ): Promise<{
+  action?: SuggestionAction;
   reason: string;
   confidence: Confidence;
   analysisPatch: Record<string, unknown>;
@@ -285,6 +288,7 @@ export async function enrichEditSuggestionWithByok(
 
   if (!parsed.should_edit || contentUpdates.length === 0) {
     return {
+      action: 'review',
       reason: parsed.reason,
       confidence: 'low',
       analysisPatch: {

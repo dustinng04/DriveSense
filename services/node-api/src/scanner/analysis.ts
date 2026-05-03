@@ -88,7 +88,36 @@ function hashBytes(bytes: Uint8Array): string {
 }
 
 function normalizeText(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, ' ').trim();
+  return text
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function simpleStem(word: string): string {
+  // Version-like or standalone numeric tokens (e.g. "2", "2026") should not
+  // penalize semantic title similarity.
+  if (/^\d+$/.test(word)) {
+    return '';
+  }
+
+  if (word.length <= 3) return word;
+
+  if (word.endsWith('ies')) {
+    return word.slice(0, -3) + 'i';
+  }
+
+  const suffixes = ['ing', 'ed', 'es', 's'];
+  for (const suffix of suffixes) {
+    if (word.endsWith(suffix)) {
+      const stem = word.slice(0, -suffix.length);
+      if (stem.length >= 3) return stem;
+    }
+  }
+
+  return word;
 }
 
 function tokenize(text: string): Set<string> {
@@ -98,7 +127,12 @@ function tokenize(text: string): Set<string> {
     return new Set<string>();
   }
 
-  return new Set(normalized.split(' '));
+  return new Set(
+    normalized
+      .split(' ')
+      .map(simpleStem)
+      .filter((token) => token.length > 0),
+  );
 }
 
 function jaccardSimilarity(left: Set<string>, right: Set<string>): number {
@@ -400,6 +434,9 @@ function sizeSimilarity(sizeA?: number, sizeB?: number): number {
 }
 
 function hasCommonParent(a: IndexedFileMetadata, b: IndexedFileMetadata): boolean {
+  if (a.parentFolderIds.length === 0 || b.parentFolderIds.length === 0) {
+    return false;
+  }
   const setA = new Set(a.parentFolderIds);
   return b.parentFolderIds.some((id) => setA.has(id));
 }
@@ -409,7 +446,7 @@ export function detectMetadataDuplicates(
   universe: IndexedFileMetadata[],
   options: { nameThreshold?: number; sizeTolerancePct?: number } = {},
 ): MetadataDuplicatePair[] {
-  const nameThreshold = options.nameThreshold ?? 0.75;
+  const nameThreshold = options.nameThreshold ?? 0.6;
   const pairs: MetadataDuplicatePair[] = [];
   const tokenCache = new Map<string, Set<string>>();
 
@@ -429,19 +466,16 @@ export function detectMetadataDuplicates(
       // Skip if they share a common parent folder (same folder already handled elsewhere)
       if (hasCommonParent(candidate, universeFile)) continue;
 
-      // Skip if mime types differ
-      if (candidate.mimeType !== universeFile.mimeType) continue;
-
       // Compute name similarity
       const candTokens = tokenCache.get(candidate.id) ?? new Set<string>();
       const univTokens = tokenCache.get(universeFile.id) ?? new Set<string>();
       const nameScore = jaccardSimilarity(candTokens, univTokens);
 
-      // Compute size similarity
+      // Compute size similarity for diagnostics only (size gate happens downstream)
       const sizeScore = sizeSimilarity(candidate.sizeBytes, universeFile.sizeBytes);
 
-      // Combine scores
-      const combinedScore = 0.6 * nameScore + 0.4 * sizeScore;
+      // Gate by name only; mime/size are validated in later stages.
+      const combinedScore = nameScore;
 
       // Emit pair if above threshold
       if (combinedScore >= nameThreshold) {

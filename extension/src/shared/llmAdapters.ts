@@ -23,7 +23,7 @@ const DEFAULT_BASE_URLS: Record<Provider, string> = {
 };
 
 const DEFAULT_MODELS: Record<Provider, string> = {
-  gemini: 'gemini-3-flash',
+  gemini: 'gemini-2.5-flash',
   openai: 'gpt-4o-mini',
   anthropic: 'claude-haiku-4-5',
   glm: 'glm-4.7-flash',

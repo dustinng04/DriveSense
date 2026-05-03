@@ -22,6 +22,7 @@ import {
   fetchFolderFiles,
   fetchParentFolderId,
   undoAction,
+  resolveAccountIdForPlatform,
 } from '../shared/api.js';
 import { BUILD_TIME_BEARER_TOKEN } from '../shared/buildConfig.js';
 import {
@@ -35,17 +36,19 @@ import {
 import { initSupabase, subscribeToSuggestions } from '../shared/realtime.js';
 import { getAllIndexedFiles, getCandidatesForOrchestrator, isFolderCrawlFresh, upsertFilesFromCrawl } from '../shared/metadataIndex.js';
 import type { BackgroundMessage, BackgroundResponse } from '../shared/types.js';
-import { enrichSuggestionWithByok } from '../shared/suggestionEnrichment.js';
+import { enrichEditSuggestionWithByok, enrichSuggestionWithByok } from '../shared/suggestionEnrichment.js';
 import { ProgressiveCrawlQueue } from './progressiveCrawl.js';
 
 const LOG_PREFIX = '[DriveSense:bg]';
 const ALARM_NAME = 'ds_suggestion_poll';
 const POLL_INTERVAL_MINUTES = 5;
+const CROSS_FOLDER_DELAY_MS = 15_000;
+const CROSS_FOLDER_SCAN_COOLDOWN_MS = 5 * 60 * 1000;
 
 // Debounce control for cross-folder scan
 let crossFolderTimerHandle: ReturnType<typeof setTimeout> | null = null;
 let crossFolderContextKey: string | null = null;
-const CROSS_FOLDER_DELAY_MS = 15_000; // 15 seconds debounce
+const crossFolderLastScanAt = new Map<string, number>();
 
 // Progressive crawl queue
 const crawlQueue = new ProgressiveCrawlQueue();
@@ -180,9 +183,39 @@ async function ensureRealtimeSubscription(): Promise<void> {
 
 const enrichmentInFlight = new Set<string>();
 
+function normalizeSuggestionFileIds(action: string, fileIds: string[]): string[] {
+  if (action === 'edit') {
+    return [...fileIds];
+  }
+  return [...fileIds].sort();
+}
+
+function buildSuggestionSignature(suggestion: { platform?: string; action?: string; fileIds?: string[] }): string {
+  const platform = suggestion.platform ?? 'unknown_platform';
+  const action = suggestion.action ?? 'unknown_action';
+  const fileIds = normalizeSuggestionFileIds(action, suggestion.fileIds ?? []);
+  return `${platform}:${action}:${fileIds.join(':')}`;
+}
+
+function buildCrossFolderScanKey(platform: string, accountId: string, folderId: string): string {
+  return `${platform}:${accountId}:${folderId}`;
+}
+
+function isCrossFolderScanCoolingDown(key: string): boolean {
+  const now = Date.now();
+  const lastScanAt = crossFolderLastScanAt.get(key);
+  if (lastScanAt && now - lastScanAt < CROSS_FOLDER_SCAN_COOLDOWN_MS) {
+    return true;
+  }
+
+  crossFolderLastScanAt.set(key, now);
+  return false;
+}
+
 async function handlePendingEnrichment(suggestion: { id: string } & any): Promise<void> {
-  if (enrichmentInFlight.has(suggestion.id)) return;
-  enrichmentInFlight.add(suggestion.id);
+  const signature = buildSuggestionSignature(suggestion);
+  if (enrichmentInFlight.has(signature)) return;
+  enrichmentInFlight.add(signature);
 
   try {
     const { byokKeys } = await storageGet('byokKeys');
@@ -207,7 +240,12 @@ async function handlePendingEnrichment(suggestion: { id: string } & any): Promis
       return;
     }
 
-    const enrichment = await enrichSuggestionWithByok(suggestion, { provider, apiKey });
+    const enrichment =
+      suggestion.action === 'merge'
+        ? await enrichSuggestionWithByok(suggestion, { provider, apiKey })
+        : suggestion.action === 'edit'
+          ? await enrichEditSuggestionWithByok(suggestion, { provider, apiKey })
+          : null;
     if (!enrichment) {
       await patchSuggestionEnrichment(suggestion.id, {
         reason: suggestion.reason ?? null,
@@ -220,6 +258,7 @@ async function handlePendingEnrichment(suggestion: { id: string } & any): Promis
     const mergedReason = [suggestion.reason, `LLM note: ${enrichment.reason}`].filter(Boolean).join(' • ');
 
     await patchSuggestionEnrichment(suggestion.id, {
+      action: enrichment.action,
       reason: mergedReason || null,
       confidence: enrichment.confidence,
       analysis: enrichment.analysisPatch,
@@ -227,7 +266,7 @@ async function handlePendingEnrichment(suggestion: { id: string } & any): Promis
   } catch (error) {
     console.debug(LOG_PREFIX, 'enrichment failed', error);
   } finally {
-    enrichmentInFlight.delete(suggestion.id);
+    enrichmentInFlight.delete(signature);
   }
 }
 
@@ -475,8 +514,25 @@ async function refreshSuggestions(): Promise<void> {
     // Also fetch and store user identity to ensure chrome.storage.local is populated with userId and oauth accounts
     await fetchSessionMe().catch(() => { });
 
-    const suggestions = await fetchPendingSuggestions();
+    const { activeContext: latestContext, oauthAccountSummaries } =
+      await storageGet('activeContext', 'oauthAccountSummaries');
+    const activePlatform = latestContext?.platform;
+    const activeAccountId = activePlatform
+      ? resolveAccountIdForPlatform(activePlatform, oauthAccountSummaries, latestContext.accountId)
+      : undefined;
+
+    const refreshedSuggestions = await fetchPendingSuggestions(activePlatform);
     const previous = await getPendingSuggestions();
+    const suggestions = activePlatform
+      ? [
+          ...previous.filter((s) => {
+            if (s.platform !== activePlatform) return true;
+            if (!activeAccountId) return false;
+            return s.accountId !== activeAccountId;
+          }),
+          ...refreshedSuggestions,
+        ]
+      : refreshedSuggestions;
     await setPendingSuggestions(suggestions);
 
     // Badge count
@@ -518,7 +574,7 @@ async function refreshSuggestions(): Promise<void> {
 
 /**
  * Debounced cross-folder scan trigger.
- * Waits 30s after context detection; if user switches context, cancels the scan.
+ * Waits 15s after context detection; if user switches context, cancels the scan.
  */
 async function triggerCrossFolderScanDebounced(platform: string, folderId: string): Promise<void> {
   // Compose a key to track which context we're waiting for
@@ -532,7 +588,7 @@ async function triggerCrossFolderScanDebounced(platform: string, folderId: strin
   // Update the current context we're tracking
   crossFolderContextKey = contextKey;
 
-  // Schedule the scan for 30 seconds from now
+  // Schedule the scan after the debounce window
   crossFolderTimerHandle = setTimeout(async () => {
     crossFolderTimerHandle = null;
 
@@ -628,14 +684,17 @@ async function performCrossFolderScan(): Promise<void> {
       folderCrawlKeys: Object.keys(metadataIndex?.folderCrawls ?? {}),
     });
 
-    // Fetch candidates (files in current folder) and universe (all other files)
-    const candidatesRaw = await getCandidatesForOrchestrator(
-      activeContext.platform as any,
-      accountId,
-      folderIdToScan, // Use resolved folder ID, not activeContext.fileId
-    );
-
+    // Notion page context should compare the current page against the rest of the indexed workspace.
     const universeRaw = await getAllIndexedFiles(activeContext.platform as any, accountId);
+
+    const candidatesRaw =
+      activeContext.platform === 'notion'
+        ? universeRaw.filter((file) => file.id === activeContext.fileId)
+        : await getCandidatesForOrchestrator(
+            activeContext.platform as any,
+            accountId,
+            folderIdToScan, // Use resolved folder ID, not activeContext.fileId
+          );
 
     // Filter universe to exclude candidates (to avoid comparing file against itself)
     const candidateIds = new Set(candidatesRaw.map((c) => c.id));
@@ -684,6 +743,12 @@ async function performCrossFolderScan(): Promise<void> {
       LOG_PREFIX,
       `Initiating cross-folder scan: ${candidates.length} candidates vs ${universe.length} universe files, LLM provider: ${llmProvider}, BYOK: ${hasByokKey}`,
     );
+
+    const scanKey = buildCrossFolderScanKey(activeContext.platform, accountId, folderIdToScan);
+    if (isCrossFolderScanCoolingDown(scanKey)) {
+      console.debug(LOG_PREFIX, 'Cross-folder scan skipped: cooldown active for folder', scanKey);
+      return;
+    }
 
     // Post to Node API (async, no await needed)
     await postCrossFolderScan({

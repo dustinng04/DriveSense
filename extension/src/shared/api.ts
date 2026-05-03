@@ -8,7 +8,7 @@
  */
 import { API_URL } from './buildConfig.js';
 import { getAuthToken, storageGet, storageSet } from './storage.js';
-import type { OAuthAccountSummary, Platform, Suggestion, UserSettings, Rule } from './types.js';
+import type { OAuthAccountSummary, Platform, Suggestion, SuggestionAction, UserSettings, Rule } from './types.js';
 
 export const PLATFORM_ACCOUNT_HEADER = 'X-Platform-Account';
 
@@ -82,8 +82,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 // --- Typed API helpers ---
 
-export async function fetchPendingSuggestions(): Promise<Suggestion[]> {
-  const data = await request<{ suggestions: Suggestion[] }>('/suggestions?status=pending');
+export async function fetchPendingSuggestions(platform?: Platform): Promise<Suggestion[]> {
+  const params = new URLSearchParams({ status: 'pending' });
+  if (platform) params.set('platform', platform);
+
+  const data = await request<{ suggestions: Suggestion[] }>(`/suggestions?${params.toString()}`);
   return data.suggestions ?? [];
 }
 
@@ -108,6 +111,7 @@ export async function undoAction(undoRef: string): Promise<void> {
 export async function patchSuggestionEnrichment(
   id: string,
   input: {
+    action?: SuggestionAction;
     title?: string;
     description?: string;
     reason?: string | null;

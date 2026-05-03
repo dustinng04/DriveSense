@@ -1,6 +1,8 @@
 import { withUserTransaction } from "../db/withUserTransaction.js";
 import type { SuggestionCard } from "./types.js";
 
+const ACTIVE_SUGGESTION_DEDUPE_WINDOW_HOURS = 24;
+
 export type SuggestionStatus =
   | "pending_enrichment"
   | "pending"
@@ -78,6 +80,55 @@ export interface ReceiveSuggestionInput {
   analysis?: Record<string, unknown>;
 }
 
+function normalizeSuggestionFileIds(action: SuggestionCard["action"], fileIds: string[]): string[] {
+  if (action === "edit") {
+    return [...fileIds];
+  }
+  return [...fileIds].sort();
+}
+
+function getAnalysisObject(value: ReceiveSuggestionInput["analysis"]): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value;
+}
+
+function getEditDedupeFiles(input: ReceiveSuggestionInput): { targetId: string; referenceId: string } | null {
+  const analysis = getAnalysisObject(input.analysis);
+  const files = analysis.files;
+  if (!files || typeof files !== "object" || Array.isArray(files)) {
+    return null;
+  }
+
+  const fileMap = files as Record<string, unknown>;
+  const targetId =
+    fileMap.target && typeof fileMap.target === "object" && !Array.isArray(fileMap.target)
+      ? (fileMap.target as { id?: unknown }).id
+      : undefined;
+  const referenceId =
+    fileMap.reference && typeof fileMap.reference === "object" && !Array.isArray(fileMap.reference)
+      ? (fileMap.reference as { id?: unknown }).id
+      : undefined;
+
+  if (typeof targetId !== "string" || typeof referenceId !== "string") {
+    return null;
+  }
+
+  return { targetId, referenceId };
+}
+
+function buildSuggestionLockKey(input: ReceiveSuggestionInput): string {
+  if (input.action === "edit") {
+    const editFiles = getEditDedupeFiles(input);
+    if (editFiles) {
+      return `${editFiles.targetId}:${editFiles.referenceId}`;
+    }
+  }
+
+  return normalizeSuggestionFileIds(input.action, input.fileIds).join(":");
+}
+
 export async function storeSuggestion(
   userId: string,
   accountId: string,
@@ -85,7 +136,54 @@ export async function storeSuggestion(
 ): Promise<StoredSuggestion> {
   return withUserTransaction(userId, async (client) => {
     const files = input.fileIds.map((id) => ({ id }));
-    const analysis = { confidence: input.confidence, ...(input.analysis ?? {}) };
+    const analysis = { confidence: input.confidence, ...getAnalysisObject(input.analysis) };
+    const advisoryLockKey = `${userId}:${input.platform}:${accountId}:${input.action}:${buildSuggestionLockKey(input)}`;
+
+    await client.query("select pg_advisory_xact_lock(hashtext($1))", [advisoryLockKey]);
+
+    const normalizedFileFilter = normalizeSuggestionFileIds(input.action, input.fileIds).map((id) => ({ id }));
+    const editFiles = input.action === "edit" ? getEditDedupeFiles(input) : null;
+    const dedupePredicate = editFiles
+      ? "and analysis @> $5::jsonb"
+      : "and files @> $5::jsonb and jsonb_array_length(files) = $6";
+    const dedupeParams = editFiles
+      ? [
+          JSON.stringify({
+            files: {
+              target: { id: editFiles.targetId },
+              reference: { id: editFiles.referenceId },
+            },
+          }),
+          ACTIVE_SUGGESTION_DEDUPE_WINDOW_HOURS,
+        ]
+      : [JSON.stringify(normalizedFileFilter), normalizedFileFilter.length, ACTIVE_SUGGESTION_DEDUPE_WINDOW_HOURS];
+    const windowParamIndex = editFiles ? 6 : 7;
+
+    const existingResult = await client.query<SuggestionRow>(
+      `select ${SELECT_COLS}
+       from public.suggestions
+       where user_id = $1
+         and platform = $2
+         and account_id = $3
+         and action = $4
+         ${dedupePredicate}
+         and status in ('pending_enrichment', 'pending', 'confirmed', 'skipped')
+         and created_at >= now() - make_interval(hours => $${windowParamIndex})
+       order by created_at desc
+       limit 1`,
+      [
+        userId,
+        input.platform,
+        accountId,
+        input.action,
+        ...dedupeParams,
+      ],
+    );
+
+    if ((existingResult.rowCount ?? 0) > 0) {
+      return rowToStored(existingResult.rows[0]);
+    }
+
     const result = await client.query<SuggestionRow>(
       `insert into public.suggestions
         (user_id, platform, account_id, action, status, title, description, reason, files, analysis)
@@ -111,6 +209,7 @@ export async function storeSuggestion(
 export interface ListSuggestionsQuery {
   status?: SuggestionStatus;
   platform?: "google_drive" | "notion";
+  accountId?: string;
   limit?: number;
   offset?: number;
 }
@@ -119,7 +218,7 @@ export async function listSuggestions(
   userId: string,
   query: ListSuggestionsQuery = {},
 ): Promise<{ suggestions: StoredSuggestion[]; total: number }> {
-  const { status, platform, limit = 50, offset = 0 } = query;
+  const { status, platform, accountId, limit = 50, offset = 0 } = query;
 
   const conditions: string[] = ["user_id = $1", "dismissed_count < 3"];
   const params: unknown[] = [userId];
@@ -131,6 +230,10 @@ export async function listSuggestions(
   if (platform) {
     params.push(platform);
     conditions.push(`platform = $${params.length}`);
+  }
+  if (accountId) {
+    params.push(accountId);
+    conditions.push(`account_id = $${params.length}`);
   }
 
   const where = conditions.join(" and ");
@@ -175,6 +278,11 @@ export interface UpdateStatusInput {
   status: SuggestionStatus;
 }
 
+export interface MarkSuggestionForReviewInput {
+  originalAction: Exclude<SuggestionCard["action"], "review">;
+  errorMessage: string;
+}
+
 export async function updateSuggestionStatus(
   userId: string,
   id: string,
@@ -199,7 +307,41 @@ export async function updateSuggestionStatus(
   });
 }
 
+export async function markSuggestionForReview(
+  userId: string,
+  id: string,
+  input: MarkSuggestionForReviewInput,
+): Promise<StoredSuggestion | null> {
+  return withUserTransaction(userId, async (client) => {
+    const result = await client.query<SuggestionRow>(
+      `update public.suggestions
+       set
+         action = 'review',
+         status = 'pending',
+         confirmed_at = null,
+         analysis = analysis || $3::jsonb
+       where user_id = $1 and id = $2
+       returning ${SELECT_COLS}`,
+      [
+        userId,
+        id,
+        JSON.stringify({
+          executionFallback: {
+            originalAction: input.originalAction,
+            failedAt: new Date().toISOString(),
+            errorMessage: input.errorMessage,
+          },
+        }),
+      ],
+    );
+
+    if (result.rowCount === 0) return null;
+    return rowToStored(result.rows[0]);
+  });
+}
+
 export interface ApplySuggestionEnrichmentInput {
+  action?: SuggestionCard["action"];
   title?: string;
   description?: string;
   reason?: string | null;
@@ -216,10 +358,11 @@ export async function applySuggestionEnrichment(
     const result = await client.query<SuggestionRow>(
       `update public.suggestions
        set
-         title = coalesce($3, title),
-         description = coalesce($4, description),
-         reason = $5,
-         analysis = analysis || $6::jsonb,
+         action = coalesce($3, action),
+         title = coalesce($4, title),
+         description = coalesce($5, description),
+         reason = $6,
+         analysis = analysis || $7::jsonb,
          status = 'pending'
        where user_id = $1
          and id = $2
@@ -228,6 +371,7 @@ export async function applySuggestionEnrichment(
       [
         userId,
         id,
+        input.action ?? null,
         input.title ?? null,
         input.description ?? null,
         input.reason ?? null,

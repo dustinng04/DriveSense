@@ -211,7 +211,6 @@ async function notionRequest(
   }
 
   if (!response.ok) {
-    console.log('Notion API error', response);
     const upstreamDetails = await parseNotionError(response);
     const normalizedStatus = response.status === 401 || response.status === 403 ? 401 : response.status;
     const details = `[${requestMethod} ${url.pathname}] upstream_status=${response.status} message=${upstreamDetails}`;
@@ -456,6 +455,7 @@ export async function updateNotionPageMarkdown(params: {
         update_content: {
           content_updates: params.contentUpdates,
         },
+        allow_deleting_content: false,
       },
     },
   );
