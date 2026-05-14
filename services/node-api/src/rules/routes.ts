@@ -14,7 +14,6 @@ interface AuthenticatedLocals {
 }
 
 const VALID_RULE_TYPES = [
-  "folder_whitelist",
   "folder_blacklist",
   "filetype_whitelist",
   "keyword_guard",
@@ -40,7 +39,6 @@ function validateRule(rule: unknown): rule is Rule {
   }
 
   switch (r.type) {
-    case "folder_whitelist":
     case "folder_blacklist":
       return (
         typeof r.path === "string" &&
@@ -92,7 +90,7 @@ rulesRouter.post(
       return res.status(400).json({
         error: "Invalid rule format",
         details:
-          "Rule must be one of: folder_whitelist, folder_blacklist, filetype_whitelist, keyword_guard",
+          "Rule must be one of: folder_blacklist, filetype_whitelist, keyword_guard",
       });
     }
 
@@ -146,7 +144,7 @@ rulesRouter.put(
         return res.status(400).json({
           error: "Invalid rule format in array",
           details:
-            "Each rule must be one of: folder_whitelist, folder_blacklist, filetype_whitelist, keyword_guard",
+            "Each rule must be one of: folder_blacklist, filetype_whitelist, keyword_guard",
         });
       }
     }

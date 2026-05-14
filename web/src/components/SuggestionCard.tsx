@@ -1,16 +1,5 @@
 import { useState } from 'react';
-
-export interface Suggestion {
-  id: string;
-  title: string;
-  description: string;
-  action: 'archive' | 'merge' | 'rename' | 'review';
-  confidence: 'high' | 'medium' | 'low';
-  status: 'pending' | 'confirmed' | 'skipped' | 'dismissed';
-  fileIds: string[];
-  platform: 'google_drive' | 'notion';
-  reason?: string;
-}
+import type { Suggestion } from '../types';
 
 interface Props {
   suggestion: Suggestion;

@@ -2,16 +2,9 @@ import type { PoolClient } from "pg";
 import { withUserTransaction } from "../db/withUserTransaction.js";
 
 export type RuleType =
-  | "folder_whitelist"
   | "folder_blacklist"
   | "filetype_whitelist"
   | "keyword_guard";
-
-export interface FolderWhitelistRule {
-  type: "folder_whitelist";
-  path: string;
-  platform: "google_drive" | "notion";
-}
 
 export interface FolderBlacklistRule {
   type: "folder_blacklist";
@@ -30,10 +23,15 @@ export interface KeywordGuardRule {
 }
 
 export type Rule =
-  | FolderWhitelistRule
   | FolderBlacklistRule
   | FileTypeWhitelistRule
   | KeywordGuardRule;
+
+interface LegacyFolderWhitelistRule {
+  type: "folder_whitelist";
+  path: string;
+  platform: "google_drive" | "notion";
+}
 
 export interface StoredRules {
   userId: string;
@@ -43,14 +41,75 @@ export interface StoredRules {
 
 interface RulesRow {
   user_id: string;
-  rules: Rule[];
+  rules: unknown[];
   updated_at: string;
+}
+
+function isPlatform(value: unknown): value is "google_drive" | "notion" {
+  return value === "google_drive" || value === "notion";
+}
+
+function sanitizeRule(rule: unknown): Rule | null {
+  if (typeof rule !== "object" || rule === null || Array.isArray(rule)) {
+    return null;
+  }
+
+  const input = rule as Record<string, unknown>;
+
+  if (input.type === "folder_whitelist") {
+    return null;
+  }
+
+  if (input.type === "folder_blacklist") {
+    if (typeof input.path !== "string" || input.path.trim().length === 0 || !isPlatform(input.platform)) {
+      return null;
+    }
+
+    return {
+      type: "folder_blacklist",
+      path: input.path,
+      platform: input.platform,
+    };
+  }
+
+  if (input.type === "filetype_whitelist") {
+    const rawTypes = Array.isArray(input.allowedTypes)
+      ? input.allowedTypes
+      : Array.isArray(input.allowed_types)
+        ? input.allowed_types
+        : null;
+
+    if (!rawTypes || !rawTypes.every((value) => typeof value === "string" && value.trim().length > 0)) {
+      return null;
+    }
+
+    return {
+      type: "filetype_whitelist",
+      allowedTypes: rawTypes,
+    };
+  }
+
+  if (input.type === "keyword_guard") {
+    if (
+      !Array.isArray(input.keywords) ||
+      !input.keywords.every((value) => typeof value === "string" && value.trim().length > 0)
+    ) {
+      return null;
+    }
+
+    return {
+      type: "keyword_guard",
+      keywords: input.keywords,
+    };
+  }
+
+  return null;
 }
 
 function rowToStored(row: RulesRow): StoredRules {
   return {
     userId: row.user_id,
-    rules: row.rules || [],
+    rules: Array.isArray(row.rules) ? row.rules.map(sanitizeRule).filter((rule): rule is Rule => rule !== null) : [],
     updatedAt: row.updated_at,
   };
 }

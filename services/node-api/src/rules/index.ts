@@ -4,7 +4,6 @@ export type {
   DriveSenseRule,
   FileTypeWhitelistRule,
   FolderBlacklistRule,
-  FolderWhitelistRule,
   KeywordGuardRule,
   RuleDecision,
   RuleEvaluationOptions,

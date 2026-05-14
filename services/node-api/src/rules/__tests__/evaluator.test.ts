@@ -1,7 +1,7 @@
 /**
  * Rule Evaluator Tests
  *
- * Tests for whitelist/blacklist/filetype/keyword behavior and evaluation order.
+ * Tests for blacklist/filetype/keyword behavior and evaluation order.
  */
 
 import { evaluateRules } from '../evaluator.js';
@@ -14,42 +14,41 @@ const baseTarget: RuleEvaluationTarget = {
   fileType: 'md',
 };
 
-function testSkipsWhenNotWhitelisted() {
-  console.log('\n=== Testing not_whitelisted skip ===');
+function testSkipsWhenBlacklisted() {
+  console.log('\n=== Testing folder blacklist enforcement ===');
   let passed = 0;
   let failed = 0;
 
   const rules: DriveSenseRule[] = [
-    { type: 'folder_whitelist', path: '/Shared/Marketing', platform: 'google_drive' },
-    { type: 'filetype_whitelist', allowed_types: ['md'], platform: 'google_drive' },
+    { type: 'folder_blacklist', path: '/Shared/Product', platform: 'google_drive' },
+    { type: 'filetype_whitelist', allowedTypes: ['md'], platform: 'google_drive' },
   ];
 
   const result = evaluateRules(rules, baseTarget);
-  if (result.decision === 'skip' && result.skipCode === 'not_whitelisted') {
-    console.log('✓ Skips when path is outside whitelist');
+  if (result.decision === 'skip' && result.skipCode === 'folder_blacklisted') {
+    console.log('✓ Skips when path is inside blacklist');
     passed++;
   } else {
-    console.log('✗ Expected not_whitelisted skip');
+    console.log('✗ Expected folder_blacklisted skip');
     failed++;
   }
 
   return { passed, failed };
 }
 
-function testBlacklistOverridesWhitelist() {
-  console.log('\n=== Testing blacklist priority ===');
+function testBlacklistSkipsWithoutWhitelist() {
+  console.log('\n=== Testing blacklist-only behavior ===');
   let passed = 0;
   let failed = 0;
 
   const rules: DriveSenseRule[] = [
-    { type: 'folder_whitelist', path: '/Shared', platform: 'google_drive' },
     { type: 'folder_blacklist', path: '/Shared/Product', platform: 'google_drive' },
-    { type: 'filetype_whitelist', allowed_types: ['md'], platform: 'google_drive' },
+    { type: 'filetype_whitelist', allowedTypes: ['md'], platform: 'google_drive' },
   ];
 
   const result = evaluateRules(rules, baseTarget);
   if (result.decision === 'skip' && result.skipCode === 'folder_blacklisted') {
-    console.log('✓ Blacklist overrides matching whitelist');
+    console.log('✓ Blacklist works without requiring any whitelist');
     passed++;
   } else {
     console.log('✗ Expected folder_blacklisted skip');
@@ -65,8 +64,7 @@ function testSkipsWhenFileTypeNotAllowed() {
   let failed = 0;
 
   const rules: DriveSenseRule[] = [
-    { type: 'folder_whitelist', path: '/Shared', platform: 'google_drive' },
-    { type: 'filetype_whitelist', allowed_types: ['txt'], platform: 'google_drive' },
+    { type: 'filetype_whitelist', allowedTypes: ['txt'], platform: 'google_drive' },
   ];
 
   const result = evaluateRules(rules, baseTarget);
@@ -87,8 +85,7 @@ function testSkipsWhenKeywordGuardMatches() {
   let failed = 0;
 
   const rules: DriveSenseRule[] = [
-    { type: 'folder_whitelist', path: '/Shared', platform: 'google_drive' },
-    { type: 'filetype_whitelist', allowed_types: ['md'], platform: 'google_drive' },
+    { type: 'filetype_whitelist', allowedTypes: ['md'], platform: 'google_drive' },
     { type: 'keyword_guard', keywords: ['spec'], platform: 'google_drive' },
   ];
 
@@ -110,8 +107,7 @@ function testAllowsWhenAllRulesPass() {
   let failed = 0;
 
   const rules: DriveSenseRule[] = [
-    { type: 'folder_whitelist', path: '/Shared', platform: 'google_drive' },
-    { type: 'filetype_whitelist', allowed_types: ['md'], platform: 'google_drive' },
+    { type: 'filetype_whitelist', allowedTypes: ['md'], platform: 'google_drive' },
     { type: 'keyword_guard', keywords: ['contract'], platform: 'google_drive' },
   ];
 
@@ -133,8 +129,8 @@ function runAllTests() {
   console.log('========================================');
 
   const results = [
-    testSkipsWhenNotWhitelisted(),
-    testBlacklistOverridesWhitelist(),
+    testSkipsWhenBlacklisted(),
+    testBlacklistSkipsWithoutWhitelist(),
     testSkipsWhenFileTypeNotAllowed(),
     testSkipsWhenKeywordGuardMatches(),
     testAllowsWhenAllRulesPass(),

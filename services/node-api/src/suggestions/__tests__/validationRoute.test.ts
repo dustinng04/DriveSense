@@ -14,8 +14,7 @@ async function testReturnsArchiveMergeRenameCards() {
   let failed = 0;
 
   const allowRules: DriveSenseRule[] = [
-    { type: 'folder_whitelist', path: '/Shared', platform: 'google_drive' },
-    { type: 'filetype_whitelist', allowed_types: ['md'], platform: 'google_drive' },
+    { type: 'filetype_whitelist', allowedTypes: ['md'], platform: 'google_drive' },
   ];
 
   const response = await callValidationApi({
@@ -69,8 +68,8 @@ async function testReturnsEmptyArrayWhenRulesBlockEverything() {
   let failed = 0;
 
   const blockingRules: DriveSenseRule[] = [
-    { type: 'folder_whitelist', path: '/Legal', platform: 'google_drive' },
-    { type: 'filetype_whitelist', allowed_types: ['md'], platform: 'google_drive' },
+    { type: 'folder_blacklist', path: '/Shared', platform: 'google_drive' },
+    { type: 'filetype_whitelist', allowedTypes: ['md'], platform: 'google_drive' },
   ];
 
   const response = await callValidationApi({

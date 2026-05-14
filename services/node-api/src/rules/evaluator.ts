@@ -2,7 +2,6 @@ import type {
   DriveSenseRule,
   FileTypeWhitelistRule,
   FolderBlacklistRule,
-  FolderWhitelistRule,
   KeywordGuardRule,
   RuleEvaluationOptions,
   RuleEvaluationResult,
@@ -71,13 +70,6 @@ function skip(
   };
 }
 
-function findWhitelists(rules: DriveSenseRule[], target: RuleEvaluationTarget): FolderWhitelistRule[] {
-  return rules.filter(
-    (rule): rule is FolderWhitelistRule =>
-      rule.type === 'folder_whitelist' && appliesToPlatform(rule, target),
-  );
-}
-
 function findBlacklists(rules: DriveSenseRule[], target: RuleEvaluationTarget): FolderBlacklistRule[] {
   return rules.filter(
     (rule): rule is FolderBlacklistRule =>
@@ -114,20 +106,6 @@ export function evaluateRules(
   const now = options.now ?? new Date();
   const checkedAt = now.toISOString();
 
-  const whitelistRules = findWhitelists(rules, target);
-  const matchingWhitelist = whitelistRules.find((rule) => isInsideFolder(target.path, rule.path));
-
-  if (!matchingWhitelist) {
-    return skip(
-      checkedAt,
-      whitelistRules[0],
-      'not_whitelisted',
-      target.path
-        ? `Path "${target.path}" is not inside a whitelisted folder.`
-        : 'No path was available to prove this resource is inside a whitelisted folder.',
-    );
-  }
-
   const matchingBlacklist = findBlacklists(rules, target).find((rule) =>
     isInsideFolder(target.path, rule.path),
   );
@@ -145,7 +123,7 @@ export function evaluateRules(
   const fileTypeWhitelistRules = findFileTypeWhitelists(rules, target);
   const matchingFileTypeWhitelist = fileTypeWhitelistRules.find((rule) =>
     targetFileType
-      ? rule.allowed_types.some((fileType) => fileType.toLowerCase() === targetFileType)
+      ? rule.allowedTypes.some((fileType) => fileType.toLowerCase() === targetFileType)
       : false,
   );
 

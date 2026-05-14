@@ -89,27 +89,15 @@ function resolveTarget(request: ValidationRequest, context: DetectedContext | nu
 }
 
 function buildDefaultRules(target: RuleEvaluationTarget): DriveSenseRule[] {
-  const path = target.path ?? '/MockWorkspace';
-  const root = extractRootFolder(path);
   const fileType = target.fileType ?? 'md';
 
   return [
     {
-      type: 'folder_whitelist',
-      path: root,
-      ...(target.platform !== 'unknown' ? { platform: target.platform } : {}),
-    },
-    {
       type: 'filetype_whitelist',
-      allowed_types: [fileType],
+      allowedTypes: [fileType],
       ...(target.platform !== 'unknown' ? { platform: target.platform } : {}),
     },
   ];
-}
-
-function extractRootFolder(path: string): string {
-  const segments = path.split('/').filter(Boolean);
-  return segments.length > 0 ? `/${segments[0]}` : '/';
 }
 
 function normalizeActions(actions: ValidationAction[] | undefined): ValidationAction[] {

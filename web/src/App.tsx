@@ -1,48 +1,43 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
-import { SuggestionCard, type Suggestion } from "./components/SuggestionCard";
-import { PageHeader } from "./components/PageHeader";
 import { StatusBar } from "./components/StatusBar";
+import { HistoryPage } from "./pages/HistoryPage";
+import { OverviewPage } from "./pages/OverviewPage";
+import { RulesPage } from "./pages/RulesPage";
+import { SettingsPage } from "./pages/SettingsPage";
+import { SuggestionsPage } from "./pages/SuggestionsPage";
+import type {
+  FiletypeWhitelistRule,
+  KeywordGuardRule,
+  Platform,
+  ProviderConnectionStatus,
+  ProviderKeys,
+  ProviderOverviewState,
+  Rule,
+  SessionData,
+  Settings,
+  Suggestion,
+  TabId,
+  UndoAction,
+} from "./types";
 
 const API_BASE = "/api";
 const TOKEN_KEY = "drivesense.authToken";
 const KEYS_KEY = "drivesense.byokKeys.v1";
 
-const PROVIDERS = ["gemini", "openai", "anthropic", "glm"] as const;
-type Provider = (typeof PROVIDERS)[number];
-type Platform = "google_drive" | "notion";
-
-interface Settings { llmProvider: Provider; }
-interface FolderWhitelistRule { type: "folder_whitelist"; path: string; platform: Platform; }
-interface FolderBlacklistRule { type: "folder_blacklist"; path: string; platform: Platform; }
-interface FiletypeWhitelistRule { type: "filetype_whitelist"; allowed_types: string[]; }
-interface KeywordGuardRule { type: "keyword_guard"; keywords: string[]; }
-type Rule = FolderWhitelistRule | FolderBlacklistRule | FiletypeWhitelistRule | KeywordGuardRule;
-interface UndoAction {
-  id: string;
-  suggestionId: string | null;
-  action: string;
-  platform: Platform;
-  actionDetails: Record<string, unknown>;
-  undoPayload: Record<string, unknown>;
-  executedAt: string;
-  undoStatus: "available" | "expired" | "failed" | "done";
-  undoError?: string;
-  accountId?: string;
-  actionGroupId?: string;
-  actionGroupStep?: number;
-  expiresAt?: string;
-}
-interface ProviderKeys { gemini: string; openai: string; anthropic: string; glm: string; }
-interface UndoHistoryGroup {
-  undoRef: string;
-  entries: UndoAction[];
-  primaryEntry: UndoAction;
-}
-
 const EMPTY_KEYS: ProviderKeys = { gemini: "", openai: "", anthropic: "", glm: "" };
 
-function readToken() { return localStorage.getItem(TOKEN_KEY) ?? ""; }
+const TABS: { id: TabId; label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "suggestions", label: "Suggestions" },
+  { id: "rules", label: "Rules" },
+  { id: "history", label: "History" },
+  { id: "settings", label: "Settings" },
+];
+
+function readToken() {
+  return localStorage.getItem(TOKEN_KEY) ?? "";
+}
 
 function getOauthSuccessInfo(): { newToken: string | null; isLinked: boolean } | null {
   if (typeof window === "undefined" || window.location.pathname !== "/oauth-success") return null;
@@ -61,12 +56,11 @@ function readInitialToken(): string {
 
 function readInitialStatus(): string {
   const oauth = getOauthSuccessInfo();
-  if (oauth?.newToken) return "Login Successful. You can close this tab.";
+  if (oauth?.newToken) return "Login successful. You can close this tab.";
   if (oauth?.isLinked) return "Account linked successfully. You can close this tab.";
   return "Ready";
 }
 
-/** When the dashboard is opened in Chrome and VITE_DS_EXTENSION_ID is set, push the token into the extension. */
 function pushTokenToExtension(tokenValue: string): void {
   const extensionId = import.meta.env.VITE_DS_EXTENSION_ID?.trim();
   if (!extensionId || !tokenValue.trim()) return;
@@ -88,82 +82,63 @@ function pushTokenToExtension(tokenValue: string): void {
     },
   );
 }
+
 function readKeys(): ProviderKeys {
-  try { return { ...EMPTY_KEYS, ...(JSON.parse(localStorage.getItem(KEYS_KEY) ?? "{}") as Partial<ProviderKeys>) }; }
-  catch { return EMPTY_KEYS; }
+  try {
+    return {
+      ...EMPTY_KEYS,
+      ...(JSON.parse(localStorage.getItem(KEYS_KEY) ?? "{}") as Partial<ProviderKeys>),
+    };
+  } catch {
+    return EMPTY_KEYS;
+  }
 }
 
-function statusType(msg: string): "success" | "error" | "default" {
-  if (/saved|success|added|removed|undone|loaded/i.test(msg)) return "success";
-  if (/fail|error|required/i.test(msg)) return "error";
+function statusType(message: string): "success" | "error" | "default" {
+  if (/saved|success|added|removed|undone|loaded|linked|disconnected|updated/i.test(message)) return "success";
+  if (/fail|error|required|expired|invalid/i.test(message)) return "error";
   return "default";
 }
 
-function groupUndoHistory(history: UndoAction[]): UndoHistoryGroup[] {
-  const groups = new Map<string, UndoAction[]>();
+function providerPath(provider: Platform): string {
+  return provider === "google_drive" ? "google-drive" : "notion";
+}
 
-  for (const entry of history) {
-    const key = entry.actionGroupId ?? entry.id;
-    const existing = groups.get(key);
-    if (existing) {
-      existing.push(entry);
-    } else {
-      groups.set(key, [entry]);
-    }
+function buildOverviewState(
+  provider: Platform,
+  label: string,
+  session: SessionData | null,
+  status: ProviderConnectionStatus | null,
+): ProviderOverviewState {
+  const oauthAccounts = session?.oauthAccounts.filter((account) => account.provider === provider) ?? [];
+  const statusAccounts = status?.accounts ?? [];
+  const merged = new Map(
+    oauthAccounts.map((account) => [
+      account.accountId,
+      { accountId: account.accountId, accountEmail: account.accountEmail, isPrimary: account.isPrimary },
+    ]),
+  );
+
+  for (const account of statusAccounts) {
+    const current = merged.get(account.accountId);
+    merged.set(account.accountId, {
+      accountId: account.accountId,
+      accountEmail: current?.accountEmail ?? null,
+      isPrimary: account.isPrimary,
+    });
   }
 
-  return [...groups.entries()]
-    .map(([undoRef, entries]) => ({
-      undoRef,
-      entries: [...entries].sort((a, b) => (a.actionGroupStep ?? 0) - (b.actionGroupStep ?? 0)),
-      primaryEntry: [...entries].sort((a, b) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime())[0]!,
-    }))
-    .sort((a, b) => new Date(b.primaryEntry.executedAt).getTime() - new Date(a.primaryEntry.executedAt).getTime());
-}
-
-function getUndoGroupStatus(entries: UndoAction[]): UndoAction["undoStatus"] {
-  if (entries.some((entry) => entry.undoStatus === "failed")) return "failed";
-  if (entries.every((entry) => entry.undoStatus === "done")) return "done";
-  if (entries.every((entry) => entry.undoStatus === "expired")) return "expired";
-  return "available";
-}
-
-function formatPlatform(platform: Platform): string {
-  return platform === "google_drive" ? "Google Drive" : "Notion";
-}
-
-function formatActionLabel(action: string): string {
-  return action.replace(/_/g, " ");
-}
-
-function summarizeActionDetails(actionDetails: Record<string, unknown>): string {
-  const candidateKeys = ["newName", "fileId", "survivorFileId", "sourceFileId", "updateCount"];
-
-  for (const key of candidateKeys) {
-    const value = actionDetails[key];
-    if (typeof value === "string" && value.trim()) return `${key}: ${value}`;
-    if (typeof value === "number") return `${key}: ${value}`;
-  }
-
-  const firstEntry = Object.entries(actionDetails).find(([, value]) => {
-    return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
-  });
-
-  if (!firstEntry) return "No details available";
-  return `${firstEntry[0]}: ${String(firstEntry[1])}`;
-}
-
-function formatUndoStatus(status: UndoAction["undoStatus"]): string {
-  if (status === "done") return "Undone";
-  if (status === "expired") return "Undo window closed";
-  if (status === "failed") return "Needs retry";
-  return "Available";
+  return {
+    provider,
+    label,
+    connected: (status?.connected ?? false) || merged.size > 0,
+    accounts: [...merged.values()].sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary)),
+  };
 }
 
 export default function App() {
-  const [tab, setTab] = useState("suggestions");
+  const [tab, setTab] = useState<TabId>("overview");
   const [token, setToken] = useState(readInitialToken);
-  const [tokenInput, setTokenInput] = useState(readInitialToken);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [rules, setRules] = useState<Rule[]>([]);
   const [keys, setKeys] = useState<ProviderKeys>(readKeys);
@@ -172,62 +147,133 @@ export default function App() {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [undoHistory, setUndoHistory] = useState<UndoAction[]>([]);
   const [mockPopup, setMockPopup] = useState<Suggestion | null>(null);
+  const [session, setSession] = useState<SessionData | null>(null);
+  const [googleDriveStatus, setGoogleDriveStatus] = useState<ProviderConnectionStatus | null>(null);
+  const [notionStatus, setNotionStatus] = useState<ProviderConnectionStatus | null>(null);
 
-  // Rule derived state
-  const whitelistEntries = useMemo(() => rules.flatMap((r, i) => r.type === "folder_whitelist" ? [{ i, r }] : []), [rules]);
-  const blacklistEntries = useMemo(() => rules.flatMap((r, i) => r.type === "folder_blacklist" ? [{ i, r }] : []), [rules]);
-  const filetypeIdx = rules.findIndex(r => r.type === "filetype_whitelist");
-  const filetypes = filetypeIdx >= 0 ? (rules[filetypeIdx] as FiletypeWhitelistRule).allowed_types : [];
-  const keywordIdx = rules.findIndex(r => r.type === "keyword_guard");
+  const signedIn = token.trim().length > 0;
+
+  const blacklistEntries = useMemo(
+    () => rules.flatMap((rule, index) => (rule.type === "folder_blacklist" ? [{ i: index, r: rule }] : [])),
+    [rules],
+  );
+  const filetypeIdx = rules.findIndex((rule) => rule.type === "filetype_whitelist");
+  const filetypes = filetypeIdx >= 0 ? (rules[filetypeIdx] as FiletypeWhitelistRule).allowedTypes : [];
+  const keywordIdx = rules.findIndex((rule) => rule.type === "keyword_guard");
   const keywords = keywordIdx >= 0 ? (rules[keywordIdx] as KeywordGuardRule).keywords : [];
 
-  async function req<T>(path: string, init?: RequestInit): Promise<T> {
-    if (!token) throw new Error("Save a bearer token first.");
-    const res = await fetch(`${API_BASE}${path}`, { ...init, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, ...(init?.headers ?? {}) } });
-    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
-    return res.json() as Promise<T>;
+  const providerStates = useMemo(
+    () => [
+      buildOverviewState("google_drive", "Google Drive", session, googleDriveStatus),
+      buildOverviewState("notion", "Notion", session, notionStatus),
+    ],
+    [googleDriveStatus, notionStatus, session],
+  );
+
+  function resetDashboardData() {
+    setSettings(null);
+    setRules([]);
+    setSuggestions([]);
+    setUndoHistory([]);
+    setSession(null);
+    setGoogleDriveStatus(null);
+    setNotionStatus(null);
   }
+
+  const req = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
+    if (!token.trim()) {
+      throw new Error("Sign in from Overview to use the dashboard.");
+    }
+
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        ...(init?.headers ?? {}),
+      },
+    });
+
+    if (!res.ok) {
+      const text = (await res.text()) || `HTTP ${res.status}`;
+      if (res.status === 401 || res.status === 403) {
+        localStorage.removeItem(TOKEN_KEY);
+        setToken("");
+        resetDashboardData();
+        throw new Error("Session expired. Sign in again.");
+      }
+      throw new Error(text);
+    }
+
+    if (res.status === 204) {
+      return undefined as T;
+    }
+
+    return res.json() as Promise<T>;
+  }, [token]);
 
   async function run(label: string, fn: () => Promise<void>) {
-    setLoading(true); setStatus(label);
-    try { await fn(); } catch (e) { setStatus(e instanceof Error ? e.message : "Error"); } finally { setLoading(false); }
+    setLoading(true);
+    setStatus(label);
+    try {
+      await fn();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Error");
+    } finally {
+      setLoading(false);
+    }
   }
 
-  async function loadUndoHistory() {
-    const response = await req<{ actions: UndoAction[] }>("/undo-history?limit=50&includeUndone=true");
-    setUndoHistory(response.actions ?? []);
-  }
+  const beginProviderConnection = useCallback(async (provider: Platform) => {
+    const providerSegment = providerPath(provider);
+    if (!token.trim()) {
+      const redirectUri = `${window.location.origin}/oauth-success`;
+      window.location.href = `${API_BASE}/oauth/${providerSegment}/login/start?redirect_uri=${encodeURIComponent(redirectUri)}`;
+      return;
+    }
 
-  async function loadData() {
+    await run(`Opening ${provider === "google_drive" ? "Google Drive" : "Notion"}…`, async () => {
+      const response = await req<{ authUrl: string }>(`/${providerSegment}/oauth/start`);
+      window.location.href = response.authUrl;
+    });
+  }, [req, token]);
+
+  const loadData = useCallback(async () => {
+    if (!token.trim()) {
+      setStatus("Sign in from Overview to load dashboard data.");
+      return;
+    }
+
     await run("Still looking…", async () => {
-      const [s, r, sg, u] = await Promise.all([
-        req<{ settings: Settings }>("/settings"),
-        req<{ rules: Rule[] }>("/rules"),
-        req<{ suggestions: Suggestion[] }>("/suggestions?status=pending"),
-        req<{ actions: UndoAction[] }>("/undo-history?limit=20&includeUndone=true"),
-      ]);
-      setSettings(s.settings); setRules(r.rules); setSuggestions(sg.suggestions ?? []); setUndoHistory(u.actions ?? []);
+      const [settingsResponse, rulesResponse, suggestionsResponse, undoResponse, sessionResponse, googleResponse, notionResponse] =
+        await Promise.all([
+          req<{ settings: Settings }>("/settings"),
+          req<{ rules: Rule[] }>("/rules"),
+          req<{ suggestions: Suggestion[] }>("/suggestions?status=pending"),
+          req<{ actions: UndoAction[] }>("/undo-history?limit=20&includeUndone=true"),
+          req<SessionData>("/session/me"),
+          req<ProviderConnectionStatus>("/google-drive/oauth/status"),
+          req<ProviderConnectionStatus>("/notion/oauth/status"),
+        ]);
+
+      setSettings(settingsResponse.settings);
+      setRules(rulesResponse.rules ?? []);
+      setSuggestions(suggestionsResponse.suggestions ?? []);
+      setUndoHistory(undoResponse.actions ?? []);
+      setSession(sessionResponse);
+      setGoogleDriveStatus(googleResponse);
+      setNotionStatus(notionResponse);
       setStatus("Updated successfully");
 
-      // Auto-connect logic if requested via URL param
       const params = new URLSearchParams(window.location.search);
       const connectPlatform = params.get("connect");
       if (connectPlatform === "google_drive" || connectPlatform === "notion") {
-        // Clear param so it doesn't loop
         window.history.replaceState({}, "", window.location.pathname);
-        setStatus(`Initiating ${connectPlatform} connection...`);
-        try {
-          const { authUrl } = await req<{ authUrl: string }>(`/${connectPlatform.replace("_", "-")}/oauth/start`);
-          window.location.href = authUrl;
-        } catch {
-          setStatus(`Failed to start ${connectPlatform} connection`);
-        }
+        await beginProviderConnection(connectPlatform);
       }
     });
-  }
+  }, [beginProviderConnection, req, token]);
 
-  // Handle direct OAuth login & link success — token/status are seeded by
-  // useState initializers above; this effect only performs side effects.
   useEffect(() => {
     const oauth = getOauthSuccessInfo();
     if (!oauth) return;
@@ -239,315 +285,178 @@ export default function App() {
 
     window.history.replaceState({}, "", "/");
     const timer = setTimeout(() => {
-      try { window.close(); } catch { /* tab may not be script-closable */ }
+      try {
+        window.close();
+      } catch {
+        // Tab may not be script-closable.
+      }
     }, 1500);
     return () => clearTimeout(timer);
   }, []);
 
-  async function saveRules(next: Rule[], msg: string) {
+  useEffect(() => {
+    if (!token.trim()) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void loadData();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [loadData, token]);
+
+  async function saveRules(next: Rule[], message: string) {
     await run("Updating rules…", async () => {
-      const r = await req<{ rules: Rule[] }>("/rules", { method: "PUT", body: JSON.stringify({ rules: next }) });
-      setRules(r.rules); setStatus(msg);
+      const response = await req<{ rules: Rule[] }>("/rules", {
+        method: "PUT",
+        body: JSON.stringify({ rules: next }),
+      });
+      setRules(response.rules ?? []);
+      setStatus(message);
     });
   }
 
-  async function updateSuggestion(id: string, s: string, dismissedForever = false) {
-    await req(`/suggestions/${id}/status`, { method: "PATCH", body: JSON.stringify({ status: s, dismissedForever }) });
-    setSuggestions(c => c.filter(x => x.id !== id));
-    if (mockPopup?.id === id) setMockPopup(null);
-    setStatus(`Suggestion ${s === 'confirmed' ? 'confirmed' : s === 'skipped' ? 'skipped' : 'dismissed'}`);
+  async function saveSettings() {
+    if (!settings) {
+      return;
+    }
+
+    await run("Saving settings…", async () => {
+      const response = await req<{ settings: Settings }>("/settings", {
+        method: "PATCH",
+        body: JSON.stringify(settings),
+      });
+      setSettings(response.settings);
+      setStatus("Settings saved");
+    });
+  }
+
+  async function updateSuggestion(id: string, nextStatus: "confirmed" | "skipped" | "dismissed", dismissedForever = false) {
+    await req(`/suggestions/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: nextStatus, dismissedForever }),
+    });
+    setSuggestions((current) => current.filter((suggestion) => suggestion.id !== id));
+    if (mockPopup?.id === id) {
+      setMockPopup(null);
+    }
+    setStatus(
+      `Suggestion ${
+        nextStatus === "confirmed" ? "confirmed" : nextStatus === "skipped" ? "skipped" : "dismissed"
+      }`,
+    );
   }
 
   async function performUndo(id: string) {
     await run("Reversing…", async () => {
       await req(`/undo-history/${id}/undo`, { method: "POST" });
-      await loadUndoHistory();
+      await loadData();
       setStatus("Action reversed successfully");
+    });
+  }
+
+  async function performDisconnect(provider: Platform, accountId: string) {
+    await run(`Disconnecting ${provider === "google_drive" ? "Google Drive" : "Notion"}…`, async () => {
+      await req(`/${providerPath(provider)}/oauth/connection`, {
+        method: "DELETE",
+        headers: {
+          "X-Platform-Account": accountId,
+        },
+      });
+      await loadData();
+      setStatus(`${provider === "google_drive" ? "Google Drive" : "Notion"} account disconnected`);
     });
   }
 
   return (
     <div className="shell single-column">
       <div className="main">
-        {/* Simple navigation */}
-        <nav className="top-nav">
-          <button className={tab === "suggestions" ? "active" : ""} onClick={() => setTab("suggestions")}>Suggestions</button>
-          <button className={tab === "rules" ? "active" : ""} onClick={() => setTab("rules")}>Rules</button>
-          <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>History</button>
-          <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>Settings</button>
+        <nav className="top-nav" aria-label="Dashboard navigation">
+          {TABS.map((item) => (
+            <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>
+              <span>{item.label}</span>
+              {item.id === "suggestions" && suggestions.length > 0 ? (
+                <span className="nav-count">{suggestions.length}</span>
+              ) : null}
+            </button>
+          ))}
         </nav>
 
         <main className="page-content">
-          {tab === "suggestions" && <SuggestionsPage suggestions={suggestions} mockPopup={mockPopup} loading={loading} token={token} onLoad={loadData} onUpdateSuggestion={updateSuggestion} onTriggerMock={() => setMockPopup({ id: `mock-${Date.now()}`, title: "Archive Stale File", description: "This file hasn't been modified in 2 years.", reason: "No activity since Jan 2024.", action: "archive", confidence: "high", status: "pending", fileIds: ["file123"], platform: "google_drive" })} />}
-          {tab === "rules"       && <RulesPage rules={rules} loading={loading} token={token} whitelistEntries={whitelistEntries} blacklistEntries={blacklistEntries} filetypes={filetypes} keywords={keywords} filetypeIdx={filetypeIdx} keywordIdx={keywordIdx} saveRules={saveRules} />}
-          {tab === "history"    && <HistoryPage history={undoHistory} loading={loading} onUndo={performUndo} />}
-          {tab === "settings"   && <SettingsPage settings={settings} keys={keys} tokenInput={tokenInput} loading={loading} onTokenInput={setTokenInput} onSaveToken={() => { localStorage.setItem(TOKEN_KEY, tokenInput); setToken(tokenInput); pushTokenToExtension(tokenInput); setStatus("Token saved"); }} onSaveKeys={() => { localStorage.setItem(KEYS_KEY, JSON.stringify(keys)); setStatus("API keys saved locally"); }} onKeysChange={setKeys} onSettingsChange={setSettings} onSaveSettings={async () => { if (!settings) return; await run("Saving settings…", async () => { const r = await req<{ settings: Settings }>("/settings", { method: "PATCH", body: JSON.stringify({ llmProvider: settings.llmProvider }) }); setSettings(r.settings); setStatus("Settings saved"); }); }} onLoad={loadData} />}
+          {tab === "overview" ? (
+            <OverviewPage
+              loading={loading}
+              signedIn={signedIn}
+              providers={providerStates}
+              pendingSuggestions={suggestions.length}
+              blacklistCount={blacklistEntries.length}
+              keywordCount={keywords.length}
+              undoCount={undoHistory.length}
+              onRefresh={loadData}
+              onConnect={beginProviderConnection}
+              onDisconnect={performDisconnect}
+            />
+          ) : null}
+          {tab === "suggestions" ? (
+            <SuggestionsPage
+              suggestions={suggestions}
+              mockPopup={mockPopup}
+              loading={loading}
+              signedIn={signedIn}
+              onRefresh={loadData}
+              onUpdateSuggestion={updateSuggestion}
+              onTriggerMock={() =>
+                setMockPopup({
+                  id: `mock-${Date.now()}`,
+                  title: "Archive stale file",
+                  description: "This file has not been modified in two years.",
+                  reason: "No recent activity was detected for this file.",
+                  action: "archive",
+                  confidence: "high",
+                  status: "pending",
+                  fileIds: ["file123"],
+                  platform: "google_drive",
+                })
+              }
+            />
+          ) : null}
+          {tab === "rules" ? (
+            <RulesPage
+              rules={rules}
+              loading={loading}
+              signedIn={signedIn}
+              blacklistEntries={blacklistEntries}
+              filetypes={filetypes}
+              keywords={keywords}
+              filetypeIdx={filetypeIdx}
+              keywordIdx={keywordIdx}
+              onSaveRules={saveRules}
+            />
+          ) : null}
+          {tab === "history" ? (
+            <HistoryPage history={undoHistory} loading={loading} signedIn={signedIn} onUndo={performUndo} />
+          ) : null}
+          {tab === "settings" ? (
+            <SettingsPage
+              key={settings ? "settings-loaded" : "settings-loading"}
+              settings={settings}
+              keys={keys}
+              loading={loading}
+              signedIn={signedIn}
+              onKeysChange={setKeys}
+              onSaveKeys={() => {
+                localStorage.setItem(KEYS_KEY, JSON.stringify(keys));
+                setStatus("API keys saved locally");
+              }}
+              onSettingsChange={setSettings}
+              onSaveSettings={saveSettings}
+            />
+          ) : null}
         </main>
       </div>
 
       <StatusBar message={status} type={statusType(status)} />
     </div>
-  );
-}
-
-// ─── Suggestions page ────────────────────────────────────────────────────────
-
-function SuggestionsPage({ suggestions, mockPopup, loading, token, onLoad, onUpdateSuggestion, onTriggerMock }: {
-  suggestions: Suggestion[]; mockPopup: Suggestion | null; loading: boolean; token: string;
-  onLoad: () => void; onUpdateSuggestion: (id: string, s: string, d?: boolean) => Promise<void>; onTriggerMock: () => void;
-}) {
-  return (
-    <>
-      <PageHeader title="Suggestions" description="Pending file hygiene actions waiting for your review."
-        action={<div style={{ display: "flex", gap: "8px" }}>
-          <button id="trigger-mock" type="button" className="btn btn-ghost btn-sm" onClick={onTriggerMock}>Trigger Mock</button>
-          <button id="load-suggestions" type="button" className="btn btn-primary btn-sm" onClick={onLoad} disabled={loading || !token}>Load</button>
-        </div>}
-      />
-
-      {/* Mock popup preview */}
-      {mockPopup && (
-        <div style={{ marginBottom: "24px" }}>
-          <p className="form-label" style={{ marginBottom: "8px" }}>📍 Mock popup preview</p>
-          <div style={{ position: "relative" }}>
-            <SuggestionCard suggestion={mockPopup} onUpdateStatus={onUpdateSuggestion} />
-          </div>
-        </div>
-      )}
-
-      {suggestions.length === 0
-        ? <div className="empty-state"><div className="empty-state-icon">✨</div><p>No pending suggestions. Load data to check for new ones.</p></div>
-        : <div className="item-list">{suggestions.map(s => <SuggestionCard key={s.id} suggestion={s} onUpdateStatus={onUpdateSuggestion} />)}</div>
-      }
-    </>
-  );
-}
-
-// ─── Rules page ──────────────────────────────────────────────────────────────
-
-type FolderRulePlatform = "google_drive" | "notion";
-
-function RulesPage({ rules, loading, token, whitelistEntries, blacklistEntries, filetypes, keywords, filetypeIdx, keywordIdx, saveRules }: {
-  rules: Rule[]; loading: boolean; token: string;
-  whitelistEntries: { i: number; r: { path: string; platform: string } }[];
-  blacklistEntries: { i: number; r: { path: string; platform: string } }[];
-  filetypes: string[]; keywords: string[];
-  filetypeIdx: number; keywordIdx: number;
-  saveRules: (next: Rule[], msg: string) => Promise<void>;
-}) {
-  const [wPath, setWPath] = useState(""); const [wPlat, setWPlat] = useState<FolderRulePlatform>("google_drive");
-  const [bPath, setBPath] = useState(""); const [bPlat, setBPlat] = useState<FolderRulePlatform>("google_drive");
-  const [ftype, setFtype] = useState(""); const [kw, setKw] = useState("");
-
-  return (
-    <>
-      <PageHeader title="Rules" description="Declarative rules DriveSense must respect. No folder is touched unless explicitly whitelisted." />
-
-      {/* Folder whitelist */}
-      <div className="card">
-        <div className="card-header"><div><div className="card-title">🟢 Folder Whitelist</div><div className="card-desc">DriveSense only scans folders you explicitly whitelist.</div></div></div>
-        <div className="input-row" style={{ marginBottom: "12px" }}>
-          <input id="whitelist-path" className="input" value={wPath} onChange={e => setWPath(e.target.value)} placeholder="/Team Drive/Marketing" disabled={loading} />
-          <select className="select" style={{ width: "auto" }} value={wPlat} onChange={e => setWPlat(e.target.value as FolderRulePlatform)} disabled={loading}>
-            <option value="google_drive">Google Drive</option><option value="notion">Notion</option>
-          </select>
-          <button id="add-whitelist" type="button" className="btn btn-primary btn-sm" disabled={loading || !token} onClick={async () => { if (!wPath.trim()) return; await saveRules([...rules, { type: "folder_whitelist", path: wPath.trim(), platform: wPlat }], "Whitelist folder added"); setWPath(""); }}>Add</button>
-        </div>
-        {whitelistEntries.length === 0
-          ? <p style={{ color: "var(--text-3)", fontSize: "13px" }}>No whitelisted folders yet — DriveSense won't scan anything.</p>
-          : <div className="item-list">{whitelistEntries.map(({ i, r }) => <div key={i} className="list-item"><span>{r.path} <em>{r.platform}</em></span><button type="button" className="btn btn-danger btn-xs" disabled={loading} onClick={() => saveRules(rules.filter((_, idx) => idx !== i), "Whitelist folder removed")}>Remove</button></div>)}</div>
-        }
-      </div>
-
-      {/* Folder blacklist */}
-      <div className="card">
-        <div className="card-header"><div><div className="card-title">🔴 Folder Blacklist</div><div className="card-desc">Never touch these folders, even inside a whitelisted parent.</div></div></div>
-        <div className="input-row" style={{ marginBottom: "12px" }}>
-          <input id="blacklist-path" className="input" value={bPath} onChange={e => setBPath(e.target.value)} placeholder="/Team Drive/Legal" disabled={loading} />
-          <select className="select" style={{ width: "auto" }} value={bPlat} onChange={e => setBPlat(e.target.value as FolderRulePlatform)} disabled={loading}>
-            <option value="google_drive">Google Drive</option><option value="notion">Notion</option>
-          </select>
-          <button id="add-blacklist" type="button" className="btn btn-primary btn-sm" disabled={loading || !token} onClick={async () => { if (!bPath.trim()) return; await saveRules([...rules, { type: "folder_blacklist", path: bPath.trim(), platform: bPlat }], "Blacklist folder added"); setBPath(""); }}>Add</button>
-        </div>
-        {blacklistEntries.length === 0
-          ? <p style={{ color: "var(--text-3)", fontSize: "13px" }}>No blacklisted folders.</p>
-          : <div className="item-list">{blacklistEntries.map(({ i, r }) => <div key={i} className="list-item"><span>{r.path} <em>{r.platform}</em></span><button type="button" className="btn btn-danger btn-xs" disabled={loading} onClick={() => saveRules(rules.filter((_, idx) => idx !== i), "Blacklist folder removed")}>Remove</button></div>)}</div>
-        }
-      </div>
-
-      {/* File types */}
-      <div className="card">
-        <div className="card-header"><div><div className="card-title">📄 File Type Whitelist</div><div className="card-desc">Only scan these file types.</div></div></div>
-        <div className="input-row" style={{ marginBottom: "12px" }}>
-          <input id="filetype-input" className="input" value={ftype} onChange={e => setFtype(e.target.value)} placeholder="gdoc, pdf, docx" disabled={loading} />
-          <button id="add-filetype" type="button" className="btn btn-primary btn-sm" disabled={loading || !token} onClick={async () => {
-            const t = ftype.trim().toLowerCase(); if (!t) return;
-            const next = [...rules];
-            if (filetypeIdx >= 0) { const ex = next[filetypeIdx] as { type: "filetype_whitelist"; allowed_types: string[] }; if (!ex.allowed_types.includes(t)) next[filetypeIdx] = { ...ex, allowed_types: [...ex.allowed_types, t] }; }
-            else next.push({ type: "filetype_whitelist", allowed_types: [t] });
-            await saveRules(next, "File type added"); setFtype("");
-          }}>Add</button>
-        </div>
-        <div className="tag-list">
-          {filetypes.length === 0 ? <span style={{ color: "var(--text-3)", fontSize: "13px" }}>No types specified — all skipped.</span>
-            : filetypes.map(t => <span key={t} className="tag">{t}<button type="button" className="tag-remove" onClick={async () => {
-                const next = [...rules]; const ex = next[filetypeIdx] as { type: "filetype_whitelist"; allowed_types: string[] };
-                const newTypes = ex.allowed_types.filter(x => x !== t);
-                if (newTypes.length === 0) { const filtered = next.filter((_, idx) => idx !== filetypeIdx); await saveRules(filtered, "File type removed"); }
-                else { next[filetypeIdx] = { ...ex, allowed_types: newTypes }; await saveRules(next, "File type removed"); }
-              }}>×</button></span>)}
-        </div>
-      </div>
-
-      {/* Keywords */}
-      <div className="card">
-        <div className="card-header"><div><div className="card-title">🔑 Keyword Guard</div><div className="card-desc">Never act on files whose name contains these keywords.</div></div></div>
-        <div className="input-row" style={{ marginBottom: "12px" }}>
-          <input id="keyword-input" className="input" value={kw} onChange={e => setKw(e.target.value)} placeholder="final, draft, do-not-delete" disabled={loading} />
-          <button id="add-keyword" type="button" className="btn btn-primary btn-sm" disabled={loading || !token} onClick={async () => {
-            const k = kw.trim().toLowerCase(); if (!k) return;
-            const next = [...rules];
-            if (keywordIdx >= 0) { const ex = next[keywordIdx] as { type: "keyword_guard"; keywords: string[] }; if (!ex.keywords.includes(k)) next[keywordIdx] = { ...ex, keywords: [...ex.keywords, k] }; }
-            else next.push({ type: "keyword_guard", keywords: [k] });
-            await saveRules(next, "Keyword added"); setKw("");
-          }}>Add</button>
-        </div>
-        <div className="tag-list">
-          {keywords.length === 0 ? <span style={{ color: "var(--text-3)", fontSize: "13px" }}>No keywords guarded.</span>
-            : keywords.map(k => <span key={k} className="tag">{k}<button type="button" className="tag-remove" onClick={async () => {
-                const next = [...rules]; const ex = next[keywordIdx] as { type: "keyword_guard"; keywords: string[] };
-                const newKws = ex.keywords.filter(x => x !== k);
-                if (newKws.length === 0) { await saveRules(next.filter((_, idx) => idx !== keywordIdx), "Keyword removed"); }
-                else { next[keywordIdx] = { ...ex, keywords: newKws }; await saveRules(next, "Keyword removed"); }
-              }}>×</button></span>)}
-        </div>
-      </div>
-    </>
-  );
-}
-
-// ─── Undo History page ───────────────────────────────────────────────────────
-
-function HistoryPage({ history, loading, onUndo }: { history: UndoAction[]; loading: boolean; onUndo: (id: string) => Promise<void> }) {
-  const groups = useMemo(() => groupUndoHistory(history), [history]);
-
-  return (
-    <>
-      <PageHeader title="Undo History" description="Recent confirmed actions, grouped by operation and refreshed from the server after each undo." />
-      {groups.length === 0
-        ? <div className="empty-state"><div className="empty-state-icon">📋</div><p>No history yet. Load data to see recent actions.</p></div>
-        : <div className="item-list">
-            {groups.map((group) => {
-              const status = getUndoGroupStatus(group.entries);
-              const canUndo = status === "available" || status === "failed";
-              const expiry = group.entries
-                .map((entry) => entry.expiresAt)
-                .filter((value): value is string => Boolean(value))
-                .sort()[0];
-
-              return (
-                <div key={group.undoRef} className={`undo-item status-${status}`}>
-                  <div className="undo-header">
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="undo-title-row">
-                        <span className="undo-action-badge">{formatActionLabel(group.primaryEntry.action)}</span>
-                        <span className="undo-platform-label">{formatPlatform(group.primaryEntry.platform)}</span>
-                        {group.entries.length > 1 ? <span className="undo-step-count">{group.entries.length} steps</span> : null}
-                        <span className={`undo-status-pill status-${status}`}>{formatUndoStatus(status)}</span>
-                      </div>
-                      <div className="undo-meta">Executed {new Date(group.primaryEntry.executedAt).toLocaleString()}</div>
-                      {expiry ? <div className="undo-meta">Expires {new Date(expiry).toLocaleString()}</div> : null}
-                    </div>
-                    <div style={{ flexShrink: 0 }}>
-                      <button
-                        id={`undo-${group.undoRef}`}
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => onUndo(group.undoRef)}
-                        disabled={loading || !canUndo}
-                      >
-                        ↩ Undo
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="undo-group-list">
-                    {group.entries.map((entry) => (
-                      <div key={entry.id} className="undo-group-entry">
-                        <div className="undo-group-entry-header">
-                          <span className="undo-entry-label">
-                            {group.entries.length > 1 ? `Step ${entry.actionGroupStep ?? 1}` : "Action"}
-                          </span>
-                          <span className={`undo-entry-state status-${entry.undoStatus}`}>{formatUndoStatus(entry.undoStatus)}</span>
-                        </div>
-                        <div className="undo-meta">{summarizeActionDetails(entry.actionDetails)}</div>
-                        {entry.undoError ? <div className="undo-error">{entry.undoError}</div> : null}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-      }
-    </>
-  );
-}
-
-// ─── Settings page ───────────────────────────────────────────────────────────
-
-function SettingsPage({ settings, keys, tokenInput, loading, onTokenInput, onSaveToken, onSaveKeys, onKeysChange, onSettingsChange, onSaveSettings, onLoad }: {
-  settings: Settings | null; keys: ProviderKeys; tokenInput: string; loading: boolean;
-  onTokenInput: (v: string) => void; onSaveToken: () => void; onSaveKeys: () => void;
-  onKeysChange: (k: ProviderKeys) => void; onSettingsChange: (s: Settings | null) => void;
-  onSaveSettings: () => Promise<void>; onLoad: () => void;
-}) {
-  return (
-    <>
-      <PageHeader title="Settings" description="Auth token, LLM configuration, and BYOK API keys." />
-
-      {/* Auth token */}
-      <div className="card">
-        <div className="card-header"><div><div className="card-title">🔐 API Access Token</div><div className="card-desc">Required to authenticate with the DriveSense Node API.</div></div></div>
-        <div className="form-group">
-          <label className="form-label" htmlFor="auth-token">Bearer Token</label>
-          <div className="input-row">
-            <input id="auth-token" type="password" className="input" value={tokenInput} onChange={e => onTokenInput(e.target.value)} placeholder="Paste bearer token…" />
-            <button id="save-token" type="button" className="btn btn-primary btn-sm" onClick={onSaveToken}>Save Token</button>
-            <button id="load-data" type="button" className="btn btn-secondary btn-sm" onClick={onLoad} disabled={loading || !tokenInput}>Load Data</button>
-          </div>
-        </div>
-      </div>
-
-      {/* LLM */}
-      <div className="card">
-        <div className="card-header"><div><div className="card-title">🤖 LLM Configuration</div><div className="card-desc">Persisted server-side via /settings.</div></div></div>
-        <div className="grid-2" style={{ marginBottom: "16px" }}>
-          <div className="form-group" style={{ marginBottom: 0 }}>
-            <label className="form-label" htmlFor="llm-provider">Provider</label>
-            <select id="llm-provider" className="select" value={settings?.llmProvider ?? "gemini"} disabled={loading}
-              onChange={e => { const v = e.target.value as Provider; onSettingsChange(settings ? { ...settings, llmProvider: v } : { llmProvider: v }); }}>
-              {PROVIDERS.map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </div>
-        </div>
-        <button id="save-settings" type="button" className="btn btn-primary btn-sm" onClick={onSaveSettings} disabled={loading || !settings}>Save LLM Settings</button>
-      </div>
-
-      {/* BYOK keys */}
-      <div className="card">
-        <div className="card-header"><div><div className="card-title">🗝️ BYOK API Keys</div><div className="card-desc">Stored in browser localStorage only — never sent to the backend.</div></div></div>
-        <div className="grid-2">
-          {PROVIDERS.map(p => (
-            <div key={p} className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label" htmlFor={`key-${p}`}>{p} key</label>
-              <input id={`key-${p}`} type="password" className="input" value={keys[p]} placeholder={`${p} API key`}
-                onChange={e => onKeysChange({ ...keys, [p]: e.target.value })} />
-            </div>
-          ))}
-        </div>
-        <button id="save-keys" type="button" className="btn btn-primary btn-sm" style={{ marginTop: "16px" }} onClick={onSaveKeys} disabled={loading}>Save Keys Locally</button>
-      </div>
-    </>
   );
 }

@@ -73,6 +73,37 @@
 - [ ] API documentation
 - [ ] User guide
 
-## Deferred / Optional
-- [ ] Classification tool — semantic file categorization (requires embedding pipeline, pgvector in Supabase, serverSynced index field)
-- [ ] Embedding pipeline — vector storage for semantic similarity (Python FastAPI or serverside)
+## Next Phase: Semantic Intelligence & Smarter Suggestions
+
+### Phase 1: Semantic Understanding (embeddings)
+- [ ] Embedding pipeline — vector storage for semantic similarity (pgvector in Supabase)
+- [ ] TypeScript Node API embedding generation (OpenAI/Cohere adapters)
+- [ ] Semantic duplicate detection — find files with similar meaning, not just text
+- [ ] Update similarity scoring to include embedding-based distance
+- [ ] Defer Python backend unless heavy document parsing is required
+
+### Phase 2: Classification Tool
+- [ ] AI-suggested categories — auto-tag files as "Invoice", "Contract", "Meeting Notes", etc.
+- [ ] User-defined categories — optional custom tags (e.g., "Client Proposal", "Internal Only")
+- [ ] Hybrid learning — AI adapts when user corrects tags
+- [ ] serverSynced index field for classification metadata
+- [ ] Classification UI in dashboard and extension
+
+### Phase 3: Smarter Suggestion Engine
+- [ ] Multi-file relationship analysis — "A, B, C are variations of the same doc"
+- [ ] Proactive batch suggestions — "Found 15 related files, organize them?"
+- [ ] Pattern learning from user actions (requires sufficient history data)
+- [ ] Context-aware suggestions using semantic similarity and classification
+
+### Phase 4: Knowledge Graph
+- [ ] Graph schema in PostgreSQL — file relationships, versions, references
+- [ ] Graph query layer — "Show all files related to Project X"
+- [ ] Document evolution tracking — version chains and relationship mapping
+- [ ] Dashboard visualization component — visual file relationship map
+- [ ] Defer Neo4j or dedicated graph DB until scaling requires it
+
+## Deferred / Optional (Later)
+- [ ] Automatic background scanning (optional continuous monitoring)
+- [ ] Team collaboration features (shared rules, shared history)
+- [ ] Mobile support (iOS/Android)
+- [ ] Additional platform integrations (Dropbox, OneDrive, Confluence)
